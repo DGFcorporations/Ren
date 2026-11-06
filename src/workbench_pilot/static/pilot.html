@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="pilot-csrf" content="{{csrf_token}}">
+  <title>Workbench · G1 Offline Pilot</title>
+  <link rel="stylesheet" href="/assets/pilot.css"><script src="/assets/pilot.js" defer></script>
+</head>
+<body>
+  <header class="topbar"><div class="identity"><span class="symbol">W</span><div><strong>Workbench</strong><small>G1 OFFLINE PILOT · REN REPOSITORY</small></div></div><div class="pill">Synthetic data only <span class="dot"></span></div></header>
+  <main>
+    <section class="intro"><div><p class="eyebrow">TEST THE ACTION, NOT JUST THE ANSWER</p><h1>A safe place to rehearse.</h1><p>Recall a test fact. Review an exact action. Approve once. Verify the result.</p></div><div class="budget"><strong>$0</strong><span>Authorized provider spend</span></div></section>
+    <div class="notice"><strong>Offline means offline.</strong> Scripted transcripts and a test tone replace speech services. The browser is real, but can only reach our owned local fixture. No microphone, live models, real accounts, or messages.</div>
+    <div id="error" role="alert" hidden></div>
+    <div class="workspace">
+      <section class="panel controls"><div class="section-title"><h2>01 · Choose a rehearsal</h2><span id="status" class="status" role="status" aria-live="polite">Ready</span></div>
+        <label for="fixture">Synthetic request</label><select id="fixture"></select>
+        <label for="surface">Composer to exercise</label><select id="surface"><option value="textarea">Textarea</option><option value="contenteditable">Contenteditable chat</option><option value="iframe">Owned iframe</option><option value="delayed">Delayed control</option></select>
+        <div class="actions"><button id="start">Run fixture ↗</button><button id="stop" class="secondary" disabled>Stop</button></div>
+        <div class="voice-state"><span class="avatar" aria-hidden="true">W</span><div><strong>Voice adapter: simulated</strong><p>Microphone disabled. No speech recognition or TTS.</p></div></div>
+        <p class="eyebrow">SCRIPTED TRANSCRIPT</p><blockquote id="transcript">Select a fixture to see its authored transcript.</blockquote>
+        <button id="tone" class="text-button" type="button">Play local test tone · not speech</button><audio id="audio" preload="none" src="/api/pilot/tone.wav"></audio>
+        <details class="memory-editor"><summary>Synthetic facts &amp; approved edits</summary><div id="facts"></div><label for="fact-key">Synthetic key</label><input id="fact-key" value="synthetic.helix.kickoff" maxlength="120"><label for="fact-value">Synthetic value</label><textarea id="fact-value" rows="2" maxlength="4000">15:45 UTC on the synthetic test date</textarea><div class="actions"><button id="remember" class="secondary">Propose update</button><button id="forget" class="secondary">Propose deletion</button></div></details>
+      </section>
+      <section class="panel action-panel"><div class="section-title"><h2>02 · Review &amp; verify</h2><span id="run-label" class="mono">No run yet</span></div>
+        <div id="empty" class="empty"><span class="outline-icon">↳</span><h3>Nothing happens without a proposal.</h3><p>Run a fixture to see the exact target, text and one-use approval.</p></div>
+        <div id="action" hidden>
+          <div class="binding" id="binding"></div>
+          <p class="eyebrow">EXACT PROPOSED ARGUMENTS</p><pre id="arguments"></pre>
+          <div class="approval-row"><button id="approve" disabled>Approve once</button><button id="deny" class="secondary" disabled>Deny</button><small id="expiry"></small></div>
+          <p id="run-reason" class="reason"></p>
+          <div id="receipt-wrap" hidden><p class="eyebrow">OBSERVED RESULT · NOT JUST A SUCCESS RETURN</p><pre id="receipt"></pre></div>
+          <details id="faults"><summary>Controlled fault tests · synthetic only</summary><p>These deliberately alter the owned fixture to test stale-approval rejection. They are not general browser controls.</p><div class="fault-buttons"><button data-fault="recipient">Change recipient</button><button data-fault="draft">Change draft</button><button data-fault="reload">Reload page</button><button data-fault="memory">Change fact revision</button><button data-fault="close">Close fixture page</button></div></details>
+          <details id="trace"><summary>Durable run transitions</summary><pre id="events"></pre></details>
+        </div>
+      </section>
+    </div>
+    <section class="panel preview-panel"><div class="section-title"><h2>03 · Actual managed-browser preview</h2><span class="eyebrow">OWNED FIXTURE · ANONYMOUS CONTEXT</span></div><p id="preview-note">A screenshot from the real local Chromium worker will appear here. It is a preview, not an interactive copy.</p><img id="preview" alt="Screenshot of the owned synthetic DraftBox in the managed browser" hidden></section>
+    <details class="capabilities"><summary>What is verified here—and what is not</summary><pre id="capabilities"></pre><p>Passing offline tests does not establish live speech quality, semantic-memory quality, phone compatibility or general website reliability.</p></details>
+  </main>
+  <footer>No deployments. No live credentials. No external sends. G1 is a rehearsal, not a production agent.</footer>
+</body></html>

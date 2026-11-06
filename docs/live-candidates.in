@@ -1,0 +1,11 @@
+# FUTURE G2 CANDIDATES ONLY. Not installed, imported, or enabled by the G1 runtime.
+# A resolved metadata lock is not integration or provider-call validation.
+pipecat-ai[runner,webrtc,openai,deepgram,mem0]==1.15.0
+mem0ai==2.2.1
+qdrant-client==1.20.0
+openai==3.41.0
+deepgram-sdk==7.16.0
+aiortc==1.15.0
+fastapi==0.162.0
+uvicorn==0.54.0
+httpx==0.28.1

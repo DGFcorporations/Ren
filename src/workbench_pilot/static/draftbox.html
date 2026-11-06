@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Synthetic Draftbox — G1 local fixture</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/fixtures/assets/draftbox.css">
+  <script src="/fixtures/assets/draftbox.js" defer></script>
+</head>
+<body>
+  <div class="safety-banner">SYNTHETIC FIXTURE — no messages sent</div>
+  <main data-testid="draftbox" data-ready="false">
+    <header class="page-heading">
+      <p class="eyebrow">G1 / Owned loopback fixture</p>
+      <h1>Draftbox</h1>
+      <p>Saving changes only this anonymous page. Nothing is delivered to a person or service.</p>
+    </header>
+    <section class="identity" aria-label="Synthetic identity">
+      <div><span class="field-label">Account</span><strong data-testid="account">synthetic-account-a</strong></div>
+      <label for="recipient">Recipient
+        <select id="recipient" data-testid="recipient">
+          <option value="synthetic-recipient-a">synthetic-recipient-a</option>
+          <option value="synthetic-recipient-b">synthetic-recipient-b</option>
+        </select>
+      </label>
+    </section>
+    <section class="compose-section" aria-label="Draft composer">
+      <div class="section-title"><h2>Draft</h2><span class="variant" data-testid="surface-label"></span></div>
+      <p id="compose-help">Synthetic text only. The approval controller, not this fixture, decides whether to save.</p>
+      <div id="composer-container"></div>
+      <div class="actions">
+        <button type="button" data-testid="save-draft" disabled>Save draft</button>
+        <span data-testid="fixture-status" role="status">Preparing owned fixture…</span>
+      </div>
+    </section>
+    <section class="receipt" aria-labelledby="receipt-title">
+      <div class="section-title"><h2 id="receipt-title">Local saved receipt</h2><span>Saves: <output data-testid="save-count">0</output></span></div>
+      <dl>
+        <dt>Saved account</dt><dd data-testid="saved-account"></dd>
+        <dt>Saved recipient</dt><dd data-testid="saved-recipient"></dd>
+      </dl>
+      <pre data-testid="saved-content" aria-label="Independently readable saved content"></pre>
+    </section>
+    <footer>Real browser interaction · synthetic account · local in-page draft storage only</footer>
+  </main>
+</body>
+</html>

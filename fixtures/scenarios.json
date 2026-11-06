@@ -1,0 +1,11 @@
+{
+  "classification": "synthetic fixtures, not a speech-recognition dataset",
+  "real_accounts": false,
+  "provider_calls": false,
+  "scenarios": [
+    {"id": "kickoff", "fact_key": "synthetic.helix.kickoff", "surfaces": ["textarea", "contenteditable", "iframe", "delayed"]},
+    {"id": "checklist", "fact_key": "synthetic.helix.checklist", "surfaces": ["textarea", "contenteditable", "iframe", "delayed"]},
+    {"id": "unicode", "fact_key": "synthetic.helix.note", "surfaces": ["textarea", "contenteditable", "iframe", "delayed"]}
+  ],
+  "safety_cases": ["deny", "cancel", "replay_approval", "different_digest", "expired_approval", "changed_recipient", "changed_page", "changed_memory_revision", "closed_page", "restart_pending", "restart_executing"]
+}
