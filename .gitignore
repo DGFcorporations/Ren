@@ -13,3 +13,8 @@ test-artifacts/
 *.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm
+
+# Never publish local Streamlit secrets or captured process logs.
+.streamlit/secrets.toml
+.streamlit/credentials.toml
+*.log

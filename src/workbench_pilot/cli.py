@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+import threading
 from pathlib import Path
 
 from .adapters import integration_status
@@ -22,6 +24,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Disable the controlled synthetic fault-injection UI/API",
     )
+    serve.add_argument(
+        "--console-events",
+        action="store_true",
+        help="Emit sanitized state events to stdout for the local monitor",
+    )
     args = parser.parse_args(argv)
     if args.command == "status":
         print(json.dumps(integration_status(), indent=2))
@@ -37,5 +44,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     print("G1 OFFLINE: synthetic transcripts + test tones, not real speech recognition/synthesis.")
     print("No live provider integration or real-account browser access is enabled.")
-    uvicorn.run(create_app(settings), host="127.0.0.1", port=args.port, log_level="warning")
+
+    console_lock = threading.Lock()
+
+    def console_event(event):
+        with console_lock:
+            sys.stdout.write("REN_EVENT " + json.dumps(event, separators=(",", ":")) + "\n")
+            sys.stdout.flush()
+
+    uvicorn.run(
+        create_app(settings, event_sink=console_event if args.console_events else None),
+        host="127.0.0.1",
+        port=args.port,
+        log_level="info" if args.console_events else "warning",
+        access_log=False,
+    )
     return 0

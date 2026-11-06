@@ -62,6 +62,25 @@ workbench-pilot serve --port 8877 --data-dir ./another-synthetic-data-directory
 Only one process may own a data directory. A process lock prevents another running
 server from invalidating its approvals through startup recovery.
 
+## Optional real-time stdout monitor
+
+A Streamlit monitor now captures the **owned Ren subprocess's actual stdout and
+stderr** into a bounded, read-only text area, refreshing about every 0.5 seconds.
+It has Start/Stop/Clear-view controls and does not respawn Ren on UI reruns.
+
+```bash
+pip install --require-hashes -r requirements-monitor.lock
+pip install --no-deps -e .
+ren-monitor --web                 # explicit local browser view
+ren-monitor                       # native pywebview shell, when a GUI/backend is available
+```
+
+The monitor is still G1/offline. No microphone, WebRTC audio/video, model provider,
+real-account browser or deployment is enabled. The real Streamlit browser view was
+tested; native desktop window rendering is **unverified** in this headless runtime.
+See [monitor setup and limits](docs/MONITOR.md) and
+[monitor verification](docs/MONITOR_VERIFICATION.md).
+
 ## Try the real local workflow
 
 1. Choose a synthetic request and composer variant.
@@ -121,7 +140,8 @@ strategy before enabling such writes.
 ```bash
 ruff check src tests
 ruff format --check src tests
-pytest -q --tb=short
+pytest -q -m 'not monitor' --tb=short  # G1 core only
+# With requirements-monitor.lock installed, pytest -q runs the complete suite.
 ```
 
 Full tests include real local Chromium, HTTP API/controller interactions, browser
@@ -131,7 +151,7 @@ used. A browser skip is **unverified**, not a successful browser test.
 For contract-only work when a sandboxed browser is unavailable:
 
 ```bash
-pytest -q -m 'not browser'
+pytest -q -m 'not browser and not monitor'
 ```
 
 See [verification evidence](docs/G1_VERIFICATION.md) for the actual environment,
@@ -148,6 +168,7 @@ src/workbench_pilot/
   controller.py   # one authoritative action path and safe restart/cancel semantics
   policy.py       # loopback settings and process ownership lock
   web.py, cli.py  # local-only UI/API and command line
+  process_monitor.py, monitor_*.py  # owned stdout capture, Streamlit, native-shell launcher
   static/        # UI and owned DraftBox assets; no external CDN
 fixtures/         # authored synthetic scenario catalogue
 tests/            # contract, SQLite, HTTP, real browser and UI tests

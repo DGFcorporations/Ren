@@ -1,6 +1,9 @@
 # G1 verification record
 
-**Date:** 2026-11-06. **Scope:** the source in this branch and its containing commit.
+**Date:** 2026-11-06. **Scope:** the original G1 baseline at commit
+`3e98329539d3d6059212fae747975268cbe98553`. These historical counts do not include
+the later stdout-monitor feature; see [MONITOR_VERIFICATION.md](MONITOR_VERIFICATION.md)
+for the new full regression results.
 **Disposition:** offline implementation/contract testing, not a live-integration release.
 
 ## Authorization and repository state

@@ -18,12 +18,12 @@ from workbench_pilot.web import create_app
 
 
 @contextmanager
-def live_app(data_dir, *, ttl=300, faults=True):
+def live_app(data_dir, *, ttl=300, faults=True, event_sink=None):
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     origin = f"http://127.0.0.1:{sock.getsockname()[1]}"
     settings = PilotSettings(data_dir, origin, approval_ttl_seconds=ttl, allow_fault_injection=faults)
-    app = create_app(settings)
+    app = create_app(settings, event_sink=event_sink)
     server = uvicorn.Server(uvicorn.Config(app, log_level="error", lifespan="on"))
     thread = threading.Thread(target=lambda: server.run(sockets=[sock]), daemon=True)
     thread.start()

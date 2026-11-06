@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "workbench-offline-pilot"
-version = "0.1.0a1"
+version = "0.1.0a2"
 description = "G1 offline approval-gated voice, memory, and browser contract pilot"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -16,9 +16,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["httpx==0.28.1", "pytest==9.2.0", "ruff==0.17.4"]
+monitor = ["streamlit==1.66.1"]
+desktop = ["streamlit==1.66.1", "pywebview==6.2.1"]
 
 [project.scripts]
 workbench-pilot = "workbench_pilot.cli:main"
+ren-monitor = "workbench_pilot.monitor_launcher:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/workbench_pilot"]
@@ -32,4 +35,7 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["browser: real local Chromium fixture tests (never external websites)"]
+markers = [
+  "browser: real local Chromium fixture tests (never external websites)",
+  "monitor: local subprocess and Streamlit monitoring tests (no live providers)",
+]

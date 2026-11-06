@@ -93,7 +93,7 @@ class FaultBody(StrictBody):
     kind: Literal["recipient", "draft", "reload", "close", "memory"]
 
 
-def create_app(settings: PilotSettings, *, browser_factory=FixtureBrowser) -> FastAPI:
+def create_app(settings: PilotSettings, *, browser_factory=FixtureBrowser, event_sink=None) -> FastAPI:
     # These are local anti-CSRF/session capabilities, not external service credentials.
     csrf_secret = secrets.token_bytes(32)
     sessions: OrderedDict[str, None] = OrderedDict()
@@ -110,7 +110,7 @@ def create_app(settings: PilotSettings, *, browser_factory=FixtureBrowser) -> Fa
         try:
             ledger = Ledger(settings.data_dir / "ledger.sqlite3")
             browser = browser_factory(settings.origin)
-            pilot = OfflinePilot(settings, ledger, browser)
+            pilot = OfflinePilot(settings, ledger, browser, event_sink=event_sink)
             app.state.pilot = pilot
             yield
         finally:

@@ -24,7 +24,10 @@ def _value_hash(value: str) -> str:
 
 
 class OfflinePilot:
-    def __init__(self, settings: PilotSettings, ledger: Ledger, browser: FixtureBrowser):
+    def __init__(self, settings: PilotSettings, ledger: Ledger, browser: FixtureBrowser, *, event_sink=None):
+        if event_sink is not None and not callable(event_sink):
+            raise TypeError("event_sink must be callable")
+        self._event_sink = event_sink
         self.settings = settings
         self.ledger = ledger
         self.browser = browser
@@ -38,6 +41,33 @@ class OfflinePilot:
         self._previews: OrderedDict[str, bytes] = OrderedDict()
         self.recovered = ledger.recover()
         ledger.seed_facts(OWNER, SEED_FACTS)
+        self._emit_status("pilot_initialized")
+
+    def _emit_status(self, event: str, run_id: str | None = None):
+        """Best-effort observer after durable state changes; never an authority path."""
+        if self._event_sink is None:
+            return
+        try:
+            message = {
+                "event": event,
+                "gate": "G1",
+                "live_enabled": False,
+                "timestamp": round(time.time(), 3),
+            }
+            if run_id is not None:
+                row = self.ledger.get_run(OWNER, run_id)
+                message.update(
+                    {
+                        "run_id": row["id"],
+                        "state": row["status"],
+                        "action_id": row["action_id"],
+                        "cancel_requested": row["cancel_requested"],
+                    }
+                )
+            self._event_sink(message)
+        except Exception:
+            # Logging failure cannot approve, repeat, roll back or fail a task.
+            pass
 
     def describe(self) -> dict:
         self._expire_active()
@@ -110,6 +140,7 @@ class OfflinePilot:
                     "speech": "synthetic_tone_not_TTS",
                     "fixture_id": fixture_id,
                 }
+            self._emit_status("run_requested", row["id"])
             self._pool.submit(self._prepare_browser, session, row["id"], fixture_id, surface)
         return self.get_run(session, row["id"])
 
@@ -168,8 +199,10 @@ class OfflinePilot:
             self.ledger.propose(
                 run_id, "fill_draft", args, binding, ttl_seconds=self.settings.approval_ttl_seconds
             )
+            self._emit_status("proposal_ready", run_id)
         except Exception as exc:
             self.ledger.fail(OWNER, run_id, self._reason(exc), uncertain=False)
+            self._emit_status("preparation_failed", run_id)
             self._close_browser_run(run_id)
         finally:
             self._release_terminal(run_id)
@@ -196,6 +229,7 @@ class OfflinePilot:
                 self.ledger.propose(
                     row["id"], kind, args, binding, ttl_seconds=self.settings.approval_ttl_seconds
                 )
+                self._emit_status("memory_proposal_ready", row["id"])
             except Exception as exc:
                 self.ledger.fail(OWNER, row["id"], self._reason(exc))
                 self._release_terminal(row["id"])
@@ -213,6 +247,7 @@ class OfflinePilot:
                 self._pool.submit(self._close_browser_run, action["run_id"])
                 self._release_terminal(action["run_id"])
             raise
+        self._emit_status("decision_recorded", action["run_id"])
         if approved:
             self._pool.submit(self._execute, session, action_id)
         else:
@@ -229,6 +264,7 @@ class OfflinePilot:
                 current = self._binding(session, run_id, kind, args)
                 started = self.ledger.begin(OWNER, action_id, current_binding=current)
                 begun = True
+                self._emit_status("execution_started", run_id)
                 if kind == "fill_draft":
                     # The browser worker rechecks the exact approved snapshot on its
                     # own thread before input. The owned fixture also checks its
@@ -262,10 +298,12 @@ class OfflinePilot:
                 receipt["provider_cost_usd"] = 0
                 receipt["live_integrations"] = "UNVERIFIED"
                 self.ledger.complete(OWNER, action_id, receipt)
+                self._emit_status("execution_finished", run_id)
             except Exception as exc:
                 # An exception after begin may follow a write. Do not hide that
                 # ambiguity or perform a retry, even for an owned fixture.
                 self.ledger.fail(OWNER, run_id, self._reason(exc), uncertain=begun)
+                self._emit_status("execution_failed", run_id)
             finally:
                 self._close_browser_run(run_id)
                 self._release_terminal(run_id)
@@ -273,6 +311,7 @@ class OfflinePilot:
     def cancel(self, session: str, run_id: str) -> dict:
         self.get_run(session, run_id)
         row = self.ledger.cancel(OWNER, run_id)
+        self._emit_status("cancellation_recorded", run_id)
         if row["status"] != "executing":
             self._pool.submit(self._close_browser_run, run_id)
         self._release_terminal(run_id)
