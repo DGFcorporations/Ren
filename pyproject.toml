@@ -22,9 +22,10 @@ desktop = ["streamlit==1.66.1", "pywebview==6.2.1"]
 [project.scripts]
 workbench-pilot = "workbench_pilot.cli:main"
 ren-monitor = "workbench_pilot.monitor_launcher:main"
+wren = "wren.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/workbench_pilot"]
+packages = ["src/workbench_pilot", "src/wren"]
 
 [tool.ruff]
 line-length = 110
