@@ -1,5 +1,7 @@
 """Wren command-line launcher and desktop server runner."""
 import argparse
+import threading
+import time
 
 import uvicorn
 
@@ -18,15 +20,41 @@ def main():
         choices=["faster-whisper", "mock"],
         help="STT engine",
     )
+    parser.add_argument(
+        "--native",
+        action="store_true",
+        help="Launch as native floating desktop window",
+    )
     args = parser.parse_args()
 
     print(f"=== Starting Wren Desktop Assistant on http://{args.host}:{args.port} ===")
     print(f"STT: {args.stt} | LLM Model: {args.model}")
-    print("Press Ctrl+C to stop.")
 
     controller = WrenController(stt_provider=args.stt, model=args.model)
     app = create_app(controller)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+
+    if args.native:
+        import webview
+
+        # Run uvicorn in a daemon thread
+        server_config = uvicorn.Config(app, host=args.host, port=args.port, log_level="warning")
+        server = uvicorn.Server(server_config)
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+        time.sleep(1.0)
+
+        print("Opening native floating window (always-on-top)...")
+        webview.create_window(
+            "Wren Assistant",
+            f"http://{args.host}:{args.port}",
+            width=540,
+            height=720,
+            on_top=True,
+        )
+        webview.start()
+    else:
+        print("Press Ctrl+C to stop.")
+        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 
 if __name__ == "__main__":

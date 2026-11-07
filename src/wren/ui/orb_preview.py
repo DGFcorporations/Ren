@@ -5,10 +5,19 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from wren.core.controller import WrenController
+from wren.files.ingest import FileIngestError
 
 
 class ReviseRequest(BaseModel):
     instruction: str
+
+
+class ReadFileRequest(BaseModel):
+    file_path: str
+
+
+class AttachFileRequest(BaseModel):
+    file_path: str
 
 
 def create_app(controller: WrenController | None = None) -> FastAPI:
@@ -176,6 +185,63 @@ def create_app(controller: WrenController | None = None) -> FastAPI:
     outline: 2px solid var(--primary);
     border-color: transparent;
   }
+  .chips-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 12px;
+    align-items: center;
+  }
+  .chip {
+    background: #1e293b;
+    border: 1px solid var(--primary);
+    border-radius: 16px;
+    padding: 4px 10px;
+    font-size: 0.8rem;
+    color: var(--primary);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .file-drawer {
+    margin-top: 14px;
+    padding: 14px;
+    background: #0f172a;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    display: none;
+  }
+  .file-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 8px;
+    border-bottom: 1px solid #1e293b;
+    font-size: 0.85rem;
+  }
+  .file-item:hover { background: #1e293b; border-radius: 4px; }
+  .badge-local {
+    background: #0284c7;
+    color: white;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+  }
+  .badge-cloud {
+    background: #16a34a;
+    color: white;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+  }
+  .screen-badge {
+    background: #1e1b4b;
+    border: 1px solid var(--accent);
+    color: #c7d2fe;
+    padding: 4px 10px;
+    border-radius: 8px;
+    font-size: 0.8rem;
+  }
 </style>
 </head>
 <body>
@@ -185,12 +251,33 @@ def create_app(controller: WrenController | None = None) -> FastAPI:
       <div id="orb" class="orb IDLE"></div>
       <div id="state-label" class="state-label">IDLE</div>
     </div>
-    <div id="target-badge" class="target-badge">Target: None</div>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <div id="screen-badge" class="screen-badge">Screen: Active</div>
+      <div id="target-badge" class="target-badge">Target: None</div>
+    </div>
   </div>
 
   <div class="section">
     <div class="section-title">Elevated Draft Preview (Revision <span id="rev-num">0</span>)</div>
     <div id="draft-box" class="draft-box">Waiting for voice input...</div>
+  </div>
+
+  <div class="section">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+      <div class="section-title" style="margin:0;">Context Files</div>
+      <button style="padding:4px 10px; font-size:0.8rem;" onclick="toggleFileDrawer()">
+        + Attach File / Drive
+      </button>
+    </div>
+    <div id="attached-chips" class="chips-container">
+      <span style="font-size:0.8rem; color:var(--text-muted);">No files attached</span>
+    </div>
+    <div id="file-drawer" class="file-drawer">
+      <input type="text" id="file-search-input"
+        placeholder="Search files across /Dev and Google Drive..."
+        oninput="debounceSearch()">
+      <div id="file-results" style="margin-top:10px; max-height:160px; overflow-y:auto;"></div>
+    </div>
   </div>
 
   <div class="section">
@@ -241,9 +328,93 @@ async function fetchStatus() {
     if (data.last_diff) {
       document.getElementById('diff-box').innerText = data.last_diff;
     }
+
+    fetchScreenActive();
   } catch (err) {
     console.error('Status poll error:', err);
   }
+}
+
+let attachedFiles = [];
+
+function toggleFileDrawer() {
+  const d = document.getElementById('file-drawer');
+  d.style.display = (d.style.display === 'block') ? 'none' : 'block';
+  if (d.style.display === 'block') {
+    searchFiles('');
+  }
+}
+
+let searchTimer = null;
+function debounceSearch() {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    const q = document.getElementById('file-search-input').value;
+    searchFiles(q);
+  }, 300);
+}
+
+async function searchFiles(query) {
+  try {
+    const res = await fetch(`/api/files/search?q=${encodeURIComponent(query)}`);
+    const data = await res.json();
+    const resultsContainer = document.getElementById('file-results');
+    resultsContainer.innerHTML = '';
+    if (!data.results || data.results.length === 0) {
+      resultsContainer.innerHTML = '<div style="font-size:0.8rem; color:var(--text-muted);">' +
+        'No files found</div>';
+      return;
+    }
+    data.results.forEach(f => {
+      const row = document.createElement('div');
+      row.className = 'file-item';
+      const badgeCls = f.source === 'cloud' ? 'badge-cloud' : 'badge-local';
+      const safePath = f.path.replace(/\\/g, '\\\\');
+      const attachBtn = `<button style="padding:3px 8px; font-size:0.75rem;" ` +
+        `onclick="attachFile('${safePath}')">Attach</button>`;
+      row.innerHTML = `<span><strong>${f.name}</strong> <span class="${badgeCls}">${f.source}</span></span>` +
+        attachBtn;
+      resultsContainer.appendChild(row);
+    });
+  } catch (e) {
+    console.error('File search failed:', e);
+  }
+}
+
+async function attachFile(path) {
+  try {
+    const res = await fetch('/api/files/attach', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_path: path })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      attachedFiles.push(data.attached_name);
+      renderChips();
+    }
+  } catch (e) {
+    alert('Failed to attach: ' + e);
+  }
+}
+
+function renderChips() {
+  const c = document.getElementById('attached-chips');
+  if (attachedFiles.length === 0) {
+    c.innerHTML = '<span style="font-size:0.8rem; color:var(--text-muted);">No files attached</span>';
+    return;
+  }
+  c.innerHTML = attachedFiles.map(name => `<div class="chip">📄 ${name}</div>`).join('');
+}
+
+async function fetchScreenActive() {
+  try {
+    const res = await fetch('/api/screen/active');
+    const data = await res.json();
+    if (data.app_name) {
+      document.getElementById('screen-badge').innerText = `Screen: ${data.app_name}`;
+    }
+  } catch (e) {}
 }
 
 async function startTalk() {
@@ -398,5 +569,57 @@ fetchStatus();
     def cancel():
         controller.cancel()
         return {"status": "cancelled"}
+
+    @app.get("/api/files/roots")
+    def get_file_roots():
+        return {"roots": controller.file_ingest.get_available_roots()}
+
+    @app.get("/api/files/search")
+    def search_files(q: str = ""):
+        results = controller.file_ingest.search(q)
+        return {"results": results}
+
+    @app.post("/api/files/read")
+    def read_file(req: ReadFileRequest):
+        try:
+            content = controller.file_ingest.read_file(req.file_path)
+            return {"path": req.file_path, "content": content}
+        except FileIngestError as e:
+            raise HTTPException(status_code=403, detail=str(e)) from e
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    @app.post("/api/files/attach")
+    def attach_file(req: AttachFileRequest):
+        try:
+            attached = controller.attach_file(req.file_path)
+            return {"ok": True, "attached_name": attached["name"], "path": attached["path"]}
+        except FileIngestError as e:
+            raise HTTPException(status_code=403, detail=str(e)) from e
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    @app.get("/api/screen/active")
+    def get_screen_active():
+        ctx = controller.get_screen_context(capture_screenshot=False)
+        return {
+            "app_name": ctx.app_name,
+            "window_title": ctx.window_title,
+            "window_id": ctx.window_id,
+            "is_browser": ctx.is_browser,
+            "is_editor": ctx.is_editor,
+            "is_terminal": ctx.is_terminal,
+            "timestamp": ctx.timestamp,
+        }
+
+    @app.get("/api/screen/capture")
+    def get_screen_capture():
+        ctx = controller.get_screen_context(capture_screenshot=True)
+        return {
+            "app_name": ctx.app_name,
+            "window_title": ctx.window_title,
+            "screenshot_b64": ctx.screenshot_b64,
+            "timestamp": ctx.timestamp,
+        }
 
     return app

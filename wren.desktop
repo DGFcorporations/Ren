@@ -1,0 +1,15 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Wren Assistant
+Comment=Private, Voice-First Everyday Assistant & Universal Bridge
+Exec=/home/chandler/Dev/repos/Ren/run_wren.sh
+Icon=audio-input-microphone
+Terminal=false
+Categories=Utility;Audio;Development;
+StartupNotify=true
+Actions=WebMode;
+
+[Desktop Action WebMode]
+Name=Open in Browser Mode (Port 8765)
+Exec=/home/chandler/Dev/repos/Ren/.venv/bin/wren --port 8765

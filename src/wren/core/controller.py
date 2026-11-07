@@ -1,12 +1,16 @@
 """Wren Controller: Authoritative coordinator of voice, elevation, buffer, clipboard, and target paste."""
 
 from wren.audio.capture import DesktopAudioCapture
-from wren.clipboard.x11 import ClipSnapshot, X11Clipboard
+from wren.clipboard.factory import get_clipboard_manager
+from wren.clipboard.x11 import ClipSnapshot
 from wren.core.buffer import Draft, DraftBuffer, Receipt
 from wren.core.state import WrenState, WrenStateMachine
+from wren.files.ingest import UnifiedFileIngest
 from wren.llm.elevate import PromptElevator
+from wren.screen.inspector import ScreenContext, ScreenInspector
 from wren.stt.engine import BaseSTT, FasterWhisperSTT, MockSTT
-from wren.targets.x11 import TargetMismatchError, TargetWindow, X11TargetManager
+from wren.targets.factory import get_target_manager
+from wren.targets.x11 import TargetMismatchError, TargetWindow
 
 
 class WrenController:
@@ -22,8 +26,11 @@ class WrenController:
         self.buffer = DraftBuffer()
         self.audio = DesktopAudioCapture()
         self.elevator = PromptElevator(base_url=llm_base_url, model=model)
-        self.clipboard = X11Clipboard()
-        self.targets = X11TargetManager()
+        self.clipboard = get_clipboard_manager()
+        self.targets = get_target_manager()
+        self.screen_inspector = ScreenInspector()
+        self.file_ingest = UnifiedFileIngest()
+        self.attached_files: list[dict] = []
         
         if stt_provider == "mock":
             self.stt: BaseSTT = MockSTT()
@@ -74,7 +81,15 @@ class WrenController:
             raw_text = self.stt.transcribe(wav_path)
 
         utterance = self.buffer.record_utterance(raw_text=raw_text)
-        elev_res = self.elevator.elevate(raw_text)
+        prompt_text = raw_text
+        if self.attached_files:
+            context_blocks = "\n\n".join(
+                f"[Attached file: {f['name']}]\n{f['content']}"
+                for f in self.attached_files
+            )
+            prompt_text = f"{context_blocks}\n\n[Instruction / Speech]:\n{raw_text}"
+
+        elev_res = self.elevator.elevate(prompt_text)
         self._last_diff = elev_res.diff
 
         draft = self.buffer.create_draft_from_utterance(
@@ -198,6 +213,23 @@ class WrenController:
         self.state_machine.transition(WrenState.PASTED)
         self.state_machine.transition(WrenState.IDLE)
         return receipt
+
+    def attach_file(self, file_path: str) -> dict:
+        """Attach a file's content to the prompt context."""
+        content = self.file_ingest.read_file(file_path)
+        from pathlib import Path
+        name = Path(file_path).name
+        attached = {"path": file_path, "name": name, "content": content}
+        self.attached_files.append(attached)
+        return attached
+
+    def clear_attached_files(self) -> None:
+        """Clear all attached context files."""
+        self.attached_files.clear()
+
+    def get_screen_context(self, capture_screenshot: bool = False) -> ScreenContext:
+        """Inspect active screen/window interface context."""
+        return self.screen_inspector.get_active_screen_context(capture_screenshot=capture_screenshot)
 
     def cancel(self) -> None:
         """Cancel and reset state to IDLE."""
