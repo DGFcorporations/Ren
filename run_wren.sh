@@ -17,8 +17,8 @@ fi
 # Detect display
 if [ -n "${DISPLAY:-}" ]; then
     echo "Desktop environment detected ($DISPLAY). Launching native floating window..."
-    exec "$PYTHON_EXEC" -m wren.cli --native "$@"
+    exec "$PYTHON_EXEC" -m wren.cli --native --host 0.0.0.0 "$@"
 else
     echo "Headless environment detected. Launching web service on port 8765..."
-    exec "$PYTHON_EXEC" -m wren.cli --port 8765 "$@"
+    exec "$PYTHON_EXEC" -m wren.cli --port 8765 --host 0.0.0.0 "$@"
 fi

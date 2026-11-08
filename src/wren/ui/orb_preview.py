@@ -1,6 +1,10 @@
 """Wren Floating Orb & Draft Preview Web Server."""
 
-from fastapi import FastAPI, HTTPException
+import json
+import socket
+import subprocess
+
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
@@ -20,6 +24,35 @@ class AttachFileRequest(BaseModel):
     file_path: str
 
 
+class ModeRequest(BaseModel):
+    mode: str
+
+
+def get_network_ips() -> dict[str, str]:
+    """Detect local LAN IP and Tailscale IP for mobile companion connection."""
+    lan_ip = "192.168.4.28"
+    tailscale_ip = "100.90.174.74"
+
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        detected_lan = s.getsockname()[0]
+        s.close()
+        if detected_lan and not detected_lan.startswith("127."):
+            lan_ip = detected_lan
+    except Exception:
+        pass
+
+    try:
+        res = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=1)
+        if res.returncode == 0 and res.stdout.strip():
+            tailscale_ip = res.stdout.strip().split()[0]
+    except Exception:
+        pass
+
+    return {"lan_ip": lan_ip, "tailscale_ip": tailscale_ip}
+
+
 def create_app(controller: WrenController | None = None) -> FastAPI:
     if controller is None:
         controller = WrenController()
@@ -30,444 +63,689 @@ def create_app(controller: WrenController | None = None) -> FastAPI:
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>Wren Assistant</title>
 <style>
   :root {
-    --bg-color: #0f172a;
-    --card-bg: #1e293b;
-    --text-color: #f8fafc;
+    --bg-dark: #090d16;
+    --card-bg: rgba(18, 24, 38, 0.92);
+    --surface-hover: #1e293b;
+    --text-primary: #f8fafc;
     --text-muted: #94a3b8;
     --primary: #38bdf8;
     --accent: #818cf8;
-    --success: #34d399;
-    --danger: #f87171;
-    --warning: #fbbf24;
-    --border: #334155;
+    --success: #10b981;
+    --danger: #ef4444;
+    --warning: #f59e0b;
+    --border: rgba(255, 255, 255, 0.08);
+    --border-active: rgba(56, 189, 248, 0.4);
+    --glow-primary: 0 0 24px rgba(56, 189, 248, 0.35);
+    --glow-listening: 0 0 32px rgba(239, 68, 68, 0.6);
+    --glow-success: 0 0 24px rgba(16, 185, 129, 0.4);
   }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    margin: 0;
-    padding: 24px;
-    background-color: var(--bg-color);
-    color: var(--text-color);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg-dark);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    min-height: 100vh;
     display: flex;
     justify-content: center;
+    align-items: flex-start;
+    padding: 12px;
+    -webkit-font-smoothing: antialiased;
   }
-  .container {
+  .app-widget {
     width: 100%;
-    max-width: 680px;
+    max-width: 380px;
     background: var(--card-bg);
-    border-radius: 16px;
     border: 1px solid var(--border);
-    padding: 24px;
-    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4);
+    border-radius: 20px;
+    padding: 16px;
+    backdrop-filter: blur(20px);
+    box-shadow: 0 16px 36px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.05);
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
   }
-  .header {
+  .widget-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    padding-bottom: 8px;
     border-bottom: 1px solid var(--border);
-    padding-bottom: 16px;
-    margin-bottom: 20px;
   }
-  .orb-status {
+  .brand-group {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 8px;
   }
-  .orb {
-    width: 24px;
-    height: 24px;
-    border-radius: 50%;
-    background: var(--text-muted);
-    transition: all 0.3s ease;
+  .brand-logo {
+    font-size: 1.15rem;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    background: linear-gradient(135deg, #38bdf8 0%, #818cf8 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
   }
-  .orb.IDLE { background: var(--text-muted); }
-  .orb.LISTENING {
-    background: var(--danger);
-    box-shadow: 0 0 15px var(--danger);
-    animation: pulse 1.5s infinite;
+  .target-pill {
+    font-size: 0.72rem;
+    font-weight: 500;
+    padding: 3px 8px;
+    border-radius: 9999px;
+    background: rgba(56, 189, 248, 0.1);
+    color: var(--primary);
+    border: 1px solid rgba(56, 189, 248, 0.25);
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .orb.PROCESSING { background: var(--warning); }
-  .orb.DRAFT_READY { background: var(--success); box-shadow: 0 0 10px var(--success); }
-  .orb.CLIPBOARD_WRITTEN { background: var(--primary); }
-  .orb.ERROR { background: var(--danger); }
-  @keyframes pulse {
-    0%, 100% { transform: scale(1); opacity: 1; }
-    50% { transform: scale(1.15); opacity: 0.8; }
+  .mode-bar {
+    display: flex;
+    background: rgba(15, 23, 42, 0.8);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 3px;
+    gap: 2px;
   }
-  .state-label {
+  .mode-btn {
+    flex: 1;
+    background: transparent;
+    color: var(--text-muted);
+    border: none;
+    border-radius: 9px;
+    padding: 6px 4px;
+    font-size: 0.75rem;
     font-weight: 600;
-    font-size: 1.1rem;
+    cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+  }
+  .mode-btn:hover {
+    color: var(--text-primary);
+  }
+  .mode-btn.active {
+    background: rgba(56, 189, 248, 0.18);
+    color: var(--primary);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  }
+  .orb-hero {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 16px 0;
+    cursor: pointer;
+    user-select: none;
+  }
+  .orb-wrapper {
+    position: relative;
+    width: 90px;
+    height: 90px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .orb-elem {
+    width: 72px;
+    height: 72px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, #38bdf8 0%, #1e3a8a 70%, #0f172a 100%);
+    box-shadow: 0 0 20px rgba(56, 189, 248, 0.25);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+    z-index: 2;
+  }
+  .orb-elem.LISTENING {
+    background: radial-gradient(circle at 35% 35%, #f87171 0%, #b91c1c 70%, #450a0a 100%);
+    box-shadow: var(--glow-listening);
+    transform: scale(1.08);
+    animation: orb-breathe 1.6s ease-in-out infinite;
+  }
+  .orb-elem.PROCESSING {
+    background: radial-gradient(circle at 35% 35%, #fbbf24 0%, #b45309 70%, #451a03 100%);
+    box-shadow: 0 0 24px rgba(251, 191, 36, 0.5);
+    animation: orb-spin 2s linear infinite;
+  }
+  .orb-elem.DRAFT_READY {
+    background: radial-gradient(circle at 35% 35%, #34d399 0%, #047857 70%, #064e3b 100%);
+    box-shadow: var(--glow-success);
+  }
+  .orb-elem.CLIPBOARD_WRITTEN {
+    background: radial-gradient(circle at 35% 35%, #818cf8 0%, #4338ca 70%, #1e1b4b 100%);
+    box-shadow: 0 0 24px rgba(129, 140, 248, 0.4);
+  }
+  @keyframes orb-breathe {
+    0%, 100% { transform: scale(1.04); }
+    50% { transform: scale(1.14); }
+  }
+  @keyframes orb-spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+  .waveform {
+    display: none;
+    align-items: center;
+    gap: 3px;
+    height: 18px;
+    margin-top: 8px;
+  }
+  .waveform.active {
+    display: flex;
+  }
+  .wave-bar {
+    width: 3px;
+    background: var(--danger);
+    border-radius: 2px;
+    animation: wave-motion 1s ease-in-out infinite alternate;
+  }
+  .wave-bar:nth-child(1) { height: 6px; animation-delay: 0.1s; }
+  .wave-bar:nth-child(2) { height: 16px; animation-delay: 0.3s; }
+  .wave-bar:nth-child(3) { height: 22px; animation-delay: 0.15s; }
+  .wave-bar:nth-child(4) { height: 14px; animation-delay: 0.4s; }
+  .wave-bar:nth-child(5) { height: 8px; animation-delay: 0.2s; }
+  @keyframes wave-motion {
+    0% { height: 4px; }
+    100% { height: 22px; }
+  }
+  .orb-caption {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    font-weight: 500;
+    margin-top: 6px;
+  }
+  .draft-card {
+    background: rgba(15, 23, 42, 0.7);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .draft-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
     letter-spacing: 0.5px;
   }
-  .target-badge {
-    background: #0f172a;
+  .revision-pill {
+    background: rgba(255, 255, 255, 0.05);
     border: 1px solid var(--border);
-    padding: 6px 12px;
-    border-radius: 8px;
-    font-size: 0.85rem;
-    color: var(--primary);
-  }
-  .section {
-    margin-bottom: 20px;
-  }
-  .section-title {
-    font-size: 0.8rem;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    color: var(--text-muted);
-    margin-bottom: 8px;
+    padding: 1px 6px;
+    border-radius: 9999px;
+    font-size: 0.7rem;
+    color: var(--text-primary);
   }
   .draft-box {
-    background: #0f172a;
+    background: rgba(9, 13, 22, 0.8);
     border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 16px;
-    font-size: 1.05rem;
-    line-height: 1.5;
-    min-height: 70px;
-    white-space: pre-wrap;
-  }
-  .diff-box {
-    background: #111827;
-    border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 10px;
     padding: 12px;
-    font-family: monospace;
-    font-size: 0.9rem;
-    color: var(--text-muted);
-    max-height: 120px;
+    font-size: 0.88rem;
+    line-height: 1.45;
+    min-height: 64px;
+    max-height: 200px;
     overflow-y: auto;
     white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text-primary);
   }
-  .controls {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    margin-top: 20px;
-  }
-  button {
-    background: var(--border);
-    color: var(--text-color);
-    border: none;
-    padding: 10px 18px;
-    border-radius: 8px;
-    font-size: 0.95rem;
-    font-weight: 500;
-    cursor: pointer;
-    transition: background 0.2s;
-  }
-  button:hover { background: #475569; }
-  button:disabled { opacity: 0.4; cursor: not-allowed; }
-  button.btn-primary { background: var(--primary); color: #0f172a; font-weight: 600; }
-  button.btn-primary:hover { background: #7dd3fc; }
-  button.btn-success { background: var(--success); color: #0f172a; font-weight: 600; }
-  button.btn-success:hover { background: #6ee7b7; }
-  button.btn-danger { background: var(--danger); color: #0f172a; }
-  button.btn-danger:hover { background: #fca5a5; }
-  .revision-input-group {
-    display: flex;
-    gap: 8px;
-    margin-top: 14px;
-  }
-  input[type="text"] {
-    flex: 1;
-    background: #0f172a;
+  .diff-box {
+    background: #090d16;
     border: 1px solid var(--border);
     border-radius: 8px;
-    color: var(--text-color);
-    padding: 10px 14px;
-    font-size: 0.95rem;
+    padding: 8px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    max-height: 80px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    display: none;
   }
-  input[type="text"]:focus {
-    outline: 2px solid var(--primary);
-    border-color: transparent;
+  .action-row {
+    display: flex;
+    gap: 6px;
+  }
+  .btn {
+    flex: 1;
+    background: var(--surface-hover);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 7px 10px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+  }
+  .btn:hover:not(:disabled) {
+    background: #334155;
+    border-color: rgba(255, 255, 255, 0.15);
+  }
+  .btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+  .btn-success {
+    background: var(--success);
+    color: #064e3b;
+    border: none;
+  }
+  .btn-success:hover:not(:disabled) {
+    background: #34d399;
+  }
+  .btn-primary {
+    background: var(--primary);
+    color: #0c4a6e;
+    border: none;
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: #7dd3fc;
+  }
+  .revise-row {
+    display: flex;
+    gap: 6px;
+    margin-top: 2px;
+  }
+  .revise-row input {
+    flex: 1;
+    background: rgba(9, 13, 22, 0.8);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 7px 10px;
+    font-size: 0.78rem;
+    color: var(--text-primary);
+  }
+  .revise-row input:focus {
+    outline: none;
+    border-color: var(--primary);
+  }
+  .collapsible-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.74rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px 2px;
+  }
+  .collapsible-header:hover { color: var(--text-primary); }
+  .collapsible-body {
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+    padding-top: 6px;
+  }
+  .collapsible-body.open { display: flex; }
+  .connect-card {
+    background: rgba(9, 13, 22, 0.6);
+    border: 1px dashed var(--border);
+    border-radius: 10px;
+    padding: 8px;
+    font-size: 0.72rem;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .connect-item {
+    display: flex;
+    justify-content: space-between;
+    color: var(--text-muted);
+  }
+  .connect-val {
+    color: var(--primary);
+    font-family: monospace;
+    font-weight: 600;
   }
   .chips-container {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
-    margin-bottom: 12px;
-    align-items: center;
+    gap: 4px;
   }
   .chip {
-    background: #1e293b;
-    border: 1px solid var(--primary);
-    border-radius: 16px;
-    padding: 4px 10px;
-    font-size: 0.8rem;
+    background: rgba(56, 189, 248, 0.1);
+    border: 1px solid rgba(56, 189, 248, 0.3);
+    border-radius: 9999px;
+    padding: 2px 6px;
+    font-size: 0.68rem;
     color: var(--primary);
     display: flex;
     align-items: center;
-    gap: 6px;
-  }
-  .file-drawer {
-    margin-top: 14px;
-    padding: 14px;
-    background: #0f172a;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    display: none;
-  }
-  .file-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 6px 8px;
-    border-bottom: 1px solid #1e293b;
-    font-size: 0.85rem;
-  }
-  .file-item:hover { background: #1e293b; border-radius: 4px; }
-  .badge-local {
-    background: #0284c7;
-    color: white;
-    padding: 2px 6px;
-    border-radius: 4px;
-    font-size: 0.75rem;
-  }
-  .badge-cloud {
-    background: #16a34a;
-    color: white;
-    padding: 2px 6px;
-    border-radius: 4px;
-    font-size: 0.75rem;
-  }
-  .screen-badge {
-    background: #1e1b4b;
-    border: 1px solid var(--accent);
-    color: #c7d2fe;
-    padding: 4px 10px;
-    border-radius: 8px;
-    font-size: 0.8rem;
+    gap: 4px;
   }
 </style>
 </head>
 <body>
-<div class="container">
-  <div class="header">
-    <div class="orb-status">
-      <div id="orb" class="orb IDLE"></div>
-      <div id="state-label" class="state-label">IDLE</div>
+<div class="app-widget">
+  <div class="widget-header">
+    <div class="brand-group">
+      <div class="brand-logo">Wren</div>
+      <div class="target-pill" id="target-pill">🎯 Searching target...</div>
     </div>
-    <div style="display:flex; gap:8px; align-items:center;">
-      <div id="screen-badge" class="screen-badge">Screen: Active</div>
-      <div id="target-badge" class="target-badge">Target: None</div>
-    </div>
+    <div id="status-pill" style="font-size:0.72rem; color:var(--text-muted);">IDLE</div>
   </div>
 
-  <div class="section">
-    <div class="section-title">Elevated Draft Preview (Revision <span id="rev-num">0</span>)</div>
-    <div id="draft-box" class="draft-box">Waiting for voice input...</div>
-  </div>
-
-  <div class="section">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-      <div class="section-title" style="margin:0;">Context Files</div>
-      <button style="padding:4px 10px; font-size:0.8rem;" onclick="toggleFileDrawer()">
-        + Attach File / Drive
-      </button>
-    </div>
-    <div id="attached-chips" class="chips-container">
-      <span style="font-size:0.8rem; color:var(--text-muted);">No files attached</span>
-    </div>
-    <div id="file-drawer" class="file-drawer">
-      <input type="text" id="file-search-input"
-        placeholder="Search files across /Dev and Google Drive..."
-        oninput="debounceSearch()">
-      <div id="file-results" style="margin-top:10px; max-height:160px; overflow-y:auto;"></div>
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="section-title">Change Diff vs Raw Utterance</div>
-    <div id="diff-box" class="diff-box">No changes</div>
-  </div>
-
-  <div class="controls">
-    <button id="btn-talk" class="btn-primary" onmousedown="startTalk()" onmouseup="stopTalk()">
-      Hold to Speak (PTT)
+  <div class="mode-bar">
+    <button class="mode-btn active" id="btn-mode-elevate" onclick="switchMode('elevate')">✨ Elevate</button>
+    <button class="mode-btn" id="btn-mode-agent" onclick="switchMode('agent')">🤖 Agent</button>
+    <button class="mode-btn" id="btn-mode-brainstorm" onclick="switchMode('brainstorm')">
+      💡 Brainstorm
     </button>
-    <button id="btn-copy" onclick="copyDraft()">Copy to Clipboard</button>
-    <button id="btn-paste" class="btn-success" onclick="pasteDraft()">Paste into Target</button>
-    <button id="btn-revert" onclick="revertDraft()">Revert to Raw</button>
-    <button id="btn-cancel" class="btn-danger" onclick="cancelOp()">Cancel</button>
   </div>
 
-  <div class="revision-input-group">
-    <input type="text" id="revise-input" placeholder="Revise draft by instruction...">
-    <button onclick="submitRevision()">Revise</button>
+  <div class="orb-hero" onclick="handleOrbClick()">
+    <div class="orb-wrapper">
+      <div class="orb-elem IDLE" id="orb-elem"></div>
+    </div>
+    <div class="waveform" id="waveform">
+      <div class="wave-bar"></div>
+      <div class="wave-bar"></div>
+      <div class="wave-bar"></div>
+      <div class="wave-bar"></div>
+      <div class="wave-bar"></div>
+    </div>
+    <div class="orb-caption" id="orb-caption">Tap or [Space] to Speak</div>
+  </div>
+
+  <div class="draft-card">
+    <div class="draft-card-header">
+      <span id="draft-header-title">Draft Preview</span>
+      <span class="revision-pill" id="rev-pill">v0</span>
+    </div>
+    <div class="draft-box" id="draft-box">Speak or brainstorm to generate a draft.</div>
+    <div class="diff-box" id="diff-box"></div>
+    <div class="action-row">
+      <button class="btn btn-success" id="btn-paste" onclick="pasteDraft()" disabled>🎯 Paste</button>
+      <button class="btn" id="btn-copy" onclick="copyDraft()" disabled>📋 Copy</button>
+      <button class="btn" id="btn-revert" onclick="revertDraft()" disabled>🔄 Revert</button>
+    </div>
+    <div class="revise-row">
+      <input type="text" id="revise-input" placeholder="Refine or ask Wren..."
+        onkeydown="if(event.key==='Enter') submitRevise()">
+      <button class="btn btn-primary" style="flex:0 0 54px;" onclick="submitRevise()">Send</button>
+    </div>
+  </div>
+
+  <div class="collapsible">
+    <div class="collapsible-header" onclick="toggleTray('files-body')">
+      <span>📎 Attached Context (<span id="file-count">0</span>)</span>
+      <span id="files-caret">▼</span>
+    </div>
+    <div class="collapsible-body" id="files-body">
+      <div class="chips-container" id="chips-container"></div>
+      <div style="display:flex; gap:4px;">
+        <input type="text" id="file-search-input" placeholder="Search /Dev or Drive..."
+          style="flex:1; font-size:0.72rem; padding:4px 8px; background:#090d16; color:#fff;"
+          onkeydown="if(event.key==='Enter') doSearchFiles()">
+        <button class="btn" style="flex:0 0 44px; padding:4px 6px;" onclick="doSearchFiles()">Find</button>
+      </div>
+      <div id="file-search-results"
+        style="max-height:90px; overflow-y:auto; font-size:0.7rem; color:var(--text-muted);"></div>
+    </div>
+  </div>
+
+  <div class="collapsible">
+    <div class="collapsible-header" onclick="toggleTray('connect-body')">
+      <span>📱 Companion Bridge</span>
+      <span id="connect-caret">▼</span>
+    </div>
+    <div class="collapsible-body" id="connect-body">
+      <div class="connect-card">
+        <div class="connect-item"><span>LAN IP:</span>
+          <span class="connect-val" id="lan-ip">192.168.4.28:8765</span></div>
+        <div class="connect-item"><span>Tailscale IP:</span>
+          <span class="connect-val" id="tailscale-ip">100.90.174.74:8765</span></div>
+        <div class="connect-item"><span>WebSocket:</span><span class="connect-val">ws://.../ws/connect</span></div>
+      </div>
+    </div>
   </div>
 </div>
 
 <script>
-let pollInterval = null;
+let currentState = "IDLE";
+let currentMode = "elevate";
+let isListening = false;
+
+function toggleTray(id) {
+  const el = document.getElementById(id);
+  el.classList.toggle('open');
+}
+
+async function switchMode(mode) {
+  try {
+    const res = await fetch('/api/mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: mode })
+    });
+    const data = await res.json();
+    updateModeUI(data.mode);
+  } catch (err) {
+    console.error("Failed to switch mode", err);
+  }
+}
+
+function updateModeUI(mode) {
+  currentMode = mode;
+  document.querySelectorAll('.mode-btn').forEach(btn => btn.classList.remove('active'));
+  const activeBtn = document.getElementById(`btn-mode-${mode}`);
+  if (activeBtn) activeBtn.classList.add('active');
+
+  const headers = {
+    'elevate': 'Draft Preview (✨ Elevate)',
+    'agent': 'Agent Directive (🤖 5-Gate)',
+    'brainstorm': 'Brainstorm Brief (💡 Explore)'
+  };
+  document.getElementById('draft-header-title').innerText = headers[mode] || 'Draft Preview';
+}
+
+async function handleOrbClick() {
+  const readyStates = ["IDLE", "DRAFT_READY", "CLIPBOARD_WRITTEN"];
+  if (currentState === "LISTENING") {
+    await stopListening();
+  } else if (readyStates.includes(currentState)) {
+    await startListening();
+  }
+}
+
+async function startListening() {
+  try {
+    await fetch('/api/listen/start', { method: 'POST' });
+    fetchStatus();
+  } catch (err) {
+    console.error("Error starting listen", err);
+  }
+}
+
+async function stopListening() {
+  try {
+    await fetch('/api/listen/stop', { method: 'POST' });
+    fetchStatus();
+  } catch (err) {
+    console.error("Error stopping listen", err);
+  }
+}
+
+async function pasteDraft() {
+  try {
+    await fetch('/api/paste', { method: 'POST' });
+    fetchStatus();
+  } catch (err) {
+    console.error("Error pasting", err);
+  }
+}
+
+async function copyDraft() {
+  try {
+    await fetch('/api/copy', { method: 'POST' });
+    fetchStatus();
+  } catch (err) {
+    console.error("Error copying", err);
+  }
+}
+
+async function revertDraft() {
+  try {
+    await fetch('/api/revert', { method: 'POST' });
+    fetchStatus();
+  } catch (err) {
+    console.error("Error reverting", err);
+  }
+}
+
+async function submitRevise() {
+  const input = document.getElementById('revise-input');
+  const val = input.value.trim();
+  if (!val) return;
+  try {
+    await fetch('/api/revise', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instruction: val })
+    });
+    input.value = '';
+    fetchStatus();
+  } catch (err) {
+    console.error("Error revising", err);
+  }
+}
+
+async function doSearchFiles() {
+  const q = document.getElementById('file-search-input').value.trim();
+  const res = await fetch(`/api/files/search?q=${encodeURIComponent(q)}`);
+  const data = await res.json();
+  const container = document.getElementById('file-search-results');
+  container.innerHTML = '';
+  data.results.slice(0, 5).forEach(f => {
+    const item = document.createElement('div');
+    item.style.cursor = 'pointer';
+    item.style.padding = '3px 4px';
+    item.style.borderRadius = '4px';
+    item.style.background = '#1e293b';
+    const tag = `<span style="opacity:0.6; font-size:0.65rem;">(${f.source})</span>`;
+    item.innerHTML = `<span>${f.name}</span> ` + tag;
+    item.onclick = () => attachContextFile(f.path, f.name);
+    container.appendChild(item);
+  });
+}
+
+async function attachContextFile(path, name) {
+  await fetch('/api/files/attach', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ file_path: path })
+  });
+  const chips = document.getElementById('chips-container');
+  const chip = document.createElement('div');
+  chip.className = 'chip';
+  chip.innerText = name;
+  chips.appendChild(chip);
+  const count = chips.querySelectorAll('.chip').length;
+  document.getElementById('file-count').innerText = count;
+}
 
 async function fetchStatus() {
   try {
     const res = await fetch('/api/status');
     const data = await res.json();
-    
-    document.getElementById('state-label').innerText = data.state;
-    document.getElementById('orb').className = 'orb ' + data.state;
-    
-    if (data.active_target) {
-      const snip = data.active_target.title.slice(0, 15);
-      const badgeText = `Target: ${data.active_target.wm_class} (${snip})`;
-      document.getElementById('target-badge').innerText = badgeText;
-    } else {
-      document.getElementById('target-badge').innerText = 'Target: Active Desktop Window';
+    currentState = data.state;
+    if (data.mode) {
+      updateModeUI(data.mode);
     }
 
+    const orb = document.getElementById('orb-elem');
+    orb.className = 'orb-elem ' + data.state;
+    document.getElementById('status-pill').innerText = data.state;
+
+    const waveform = document.getElementById('waveform');
+    const caption = document.getElementById('orb-caption');
+    if (data.state === 'LISTENING') {
+      waveform.classList.add('active');
+      caption.innerText = 'Listening... (Tap to elevate)';
+    } else if (data.state === 'PROCESSING') {
+      waveform.classList.remove('active');
+      caption.innerText = 'Synthesizing...';
+    } else if (data.state === 'DRAFT_READY') {
+      waveform.classList.remove('active');
+      caption.innerText = 'Draft Ready (Tap to dictate new)';
+    } else {
+      waveform.classList.remove('active');
+      caption.innerText = 'Tap or [Space] to Speak';
+    }
+
+    if (data.active_target) {
+      document.getElementById('target-pill').innerText = '🎯 ' + data.active_target.wm_class;
+    } else {
+      document.getElementById('target-pill').innerText = '🎯 No Target';
+    }
+
+    const draftBox = document.getElementById('draft-box');
+    const btnPaste = document.getElementById('btn-paste');
+    const btnCopy = document.getElementById('btn-copy');
+    const btnRevert = document.getElementById('btn-revert');
+
     if (data.current_draft) {
-      document.getElementById('draft-box').innerText = data.current_draft.text;
-      document.getElementById('rev-num').innerText = data.current_draft.revision;
+      draftBox.innerText = data.current_draft.text;
+      document.getElementById('rev-pill').innerText = 'v' + data.current_draft.revision;
+      btnPaste.disabled = false;
+      btnCopy.disabled = false;
+      btnRevert.disabled = false;
+    } else {
+      draftBox.innerText = 'Speak or brainstorm to generate a draft.';
+      btnPaste.disabled = true;
+      btnCopy.disabled = true;
+      btnRevert.disabled = true;
     }
 
     if (data.last_diff) {
-      document.getElementById('diff-box').innerText = data.last_diff;
+      const diffBox = document.getElementById('diff-box');
+      diffBox.innerText = data.last_diff;
+      diffBox.style.display = 'block';
     }
-
-    fetchScreenActive();
   } catch (err) {
-    console.error('Status poll error:', err);
+    console.error("Status fetch error", err);
   }
 }
 
-let attachedFiles = [];
-
-function toggleFileDrawer() {
-  const d = document.getElementById('file-drawer');
-  d.style.display = (d.style.display === 'block') ? 'none' : 'block';
-  if (d.style.display === 'block') {
-    searchFiles('');
-  }
-}
-
-let searchTimer = null;
-function debounceSearch() {
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => {
-    const q = document.getElementById('file-search-input').value;
-    searchFiles(q);
-  }, 300);
-}
-
-async function searchFiles(query) {
+async function fetchConnect() {
   try {
-    const res = await fetch(`/api/files/search?q=${encodeURIComponent(query)}`);
+    const res = await fetch('/api/connect');
     const data = await res.json();
-    const resultsContainer = document.getElementById('file-results');
-    resultsContainer.innerHTML = '';
-    if (!data.results || data.results.length === 0) {
-      resultsContainer.innerHTML = '<div style="font-size:0.8rem; color:var(--text-muted);">' +
-        'No files found</div>';
-      return;
+    if (data.lan_ip) {
+      document.getElementById('lan-ip').innerText = `${data.lan_ip}:${data.port}`;
     }
-    data.results.forEach(f => {
-      const row = document.createElement('div');
-      row.className = 'file-item';
-      const badgeCls = f.source === 'cloud' ? 'badge-cloud' : 'badge-local';
-      const safePath = f.path.replace(/\\/g, '\\\\');
-      const attachBtn = `<button style="padding:3px 8px; font-size:0.75rem;" ` +
-        `onclick="attachFile('${safePath}')">Attach</button>`;
-      row.innerHTML = `<span><strong>${f.name}</strong> <span class="${badgeCls}">${f.source}</span></span>` +
-        attachBtn;
-      resultsContainer.appendChild(row);
-    });
-  } catch (e) {
-    console.error('File search failed:', e);
-  }
-}
-
-async function attachFile(path) {
-  try {
-    const res = await fetch('/api/files/attach', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file_path: path })
-    });
-    const data = await res.json();
-    if (data.ok) {
-      attachedFiles.push(data.attached_name);
-      renderChips();
+    if (data.tailscale_ip) {
+      document.getElementById('tailscale-ip').innerText = `${data.tailscale_ip}:${data.port}`;
     }
-  } catch (e) {
-    alert('Failed to attach: ' + e);
+  } catch (err) {
+    console.error("Connect fetch error", err);
   }
 }
 
-function renderChips() {
-  const c = document.getElementById('attached-chips');
-  if (attachedFiles.length === 0) {
-    c.innerHTML = '<span style="font-size:0.8rem; color:var(--text-muted);">No files attached</span>';
-    return;
+// Push to talk shortcut (Spacebar)
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space' && e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
+    e.preventDefault();
+    handleOrbClick();
   }
-  c.innerHTML = attachedFiles.map(name => `<div class="chip">📄 ${name}</div>`).join('');
-}
-
-async function fetchScreenActive() {
-  try {
-    const res = await fetch('/api/screen/active');
-    const data = await res.json();
-    if (data.app_name) {
-      document.getElementById('screen-badge').innerText = `Screen: ${data.app_name}`;
-    }
-  } catch (e) {}
-}
-
-async function startTalk() {
-  document.getElementById('btn-talk').innerText = 'Listening... Release to elevate';
-  await fetch('/api/listen/start', { method: 'POST' });
-  fetchStatus();
-}
-
-async function stopTalk() {
-  document.getElementById('btn-talk').innerText = 'Hold to Speak (PTT)';
-  await fetch('/api/listen/stop', { method: 'POST' });
-  fetchStatus();
-}
-
-async function copyDraft() {
-  await fetch('/api/copy', { method: 'POST' });
-  fetchStatus();
-}
-
-async function pasteDraft() {
-  const res = await fetch('/api/paste', { method: 'POST' });
-  const data = await res.json();
-  if (!res.ok) {
-    alert('Paste failed: ' + (data.detail || 'Target mismatch or error'));
-  }
-  fetchStatus();
-}
-
-async function revertDraft() {
-  await fetch('/api/revert', { method: 'POST' });
-  fetchStatus();
-}
-
-async function cancelOp() {
-  await fetch('/api/cancel', { method: 'POST' });
-  fetchStatus();
-}
-
-async function submitRevision() {
-  const input = document.getElementById('revise-input');
-  const val = input.value.trim();
-  if (!val) return;
-  await fetch('/api/revise', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ instruction: val })
-  });
-  input.value = '';
-  fetchStatus();
-}
+});
 
 setInterval(fetchStatus, 1000);
 fetchStatus();
+fetchConnect();
 </script>
 </body>
 </html>
@@ -476,6 +754,35 @@ fetchStatus();
     @app.get("/", response_class=HTMLResponse)
     def index():
         return HTML_CONTENT
+
+    @app.get("/api/connect")
+    def get_connect_info():
+        ips = get_network_ips()
+        return {
+            "status": "ready",
+            "state": controller.state.value,
+            "mode": controller.mode,
+            "lan_ip": ips["lan_ip"],
+            "tailscale_ip": ips["tailscale_ip"],
+            "port": 8765,
+            "endpoints": {
+                "ws_connect": "/ws/connect",
+                "status": "/api/status",
+                "mode": "/api/mode",
+                "listen_start": "/api/listen/start",
+                "listen_stop": "/api/listen/stop",
+                "screen_active": "/api/screen/active",
+                "files_search": "/api/files/search",
+            },
+        }
+
+    @app.post("/api/mode")
+    def set_mode(req: ModeRequest):
+        try:
+            new_mode = controller.set_mode(req.mode)
+            return {"status": "ok", "mode": new_mode}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
 
     @app.get("/api/status")
     def get_status():
@@ -487,7 +794,7 @@ fetchStatus();
                 "title": controller.active_target.title,
                 "is_terminal": controller.active_target.is_terminal,
             }
-        
+
         draft_dict = None
         if controller.current_draft:
             draft_dict = {
@@ -499,6 +806,7 @@ fetchStatus();
 
         return {
             "state": controller.state.value,
+            "mode": controller.mode,
             "is_recording": controller.audio.is_recording,
             "current_draft": draft_dict,
             "last_diff": controller.last_diff,
@@ -621,5 +929,81 @@ fetchStatus();
             "screenshot_b64": ctx.screenshot_b64,
             "timestamp": ctx.timestamp,
         }
+
+    @app.websocket("/ws/connect")
+    async def websocket_connect(websocket: WebSocket):
+        """Bidirectional WebSocket for mobile companion streaming and real-time synchronization."""
+        await websocket.accept()
+        # Send initial status handshake
+        await websocket.send_json({
+            "type": "handshake",
+            "state": controller.state.value,
+            "mode": controller.mode,
+            "active_draft": {
+                "text": controller.current_draft.text,
+                "revision": controller.current_draft.revision,
+            } if controller.current_draft else None,
+        })
+
+        try:
+            while True:
+                data = await websocket.receive_text()
+                msg = json.loads(data)
+                action = msg.get("action")
+
+                if action == "ping":
+                    await websocket.send_json({"type": "pong"})
+
+                elif action == "set_mode":
+                    mode = msg.get("mode", "elevate")
+                    controller.set_mode(mode)
+                    await websocket.send_json({"type": "mode_updated", "mode": controller.mode})
+
+                elif action == "start_listen":
+                    controller.start_listening()
+                    await websocket.send_json({"type": "state_changed", "state": controller.state.value})
+
+                elif action == "stop_listen":
+                    draft = controller.stop_listening()
+                    await websocket.send_json({
+                        "type": "draft_ready",
+                        "draft": {
+                            "id": draft.id,
+                            "text": draft.text,
+                            "revision": draft.revision,
+                        },
+                    })
+
+                elif action == "elevate_text":
+                    raw = msg.get("text", "")
+                    mode = msg.get("mode", controller.mode)
+                    elev_res = controller.elevator.elevate(raw, mode=mode)
+                    await websocket.send_json({
+                        "type": "elevated",
+                        "raw_text": raw,
+                        "elevated_text": elev_res.elevated_text,
+                        "diff": elev_res.diff,
+                        "mode": mode,
+                    })
+
+                elif action == "copy":
+                    controller.copy_current_draft()
+                    await websocket.send_json({"type": "copied", "state": controller.state.value})
+
+                elif action == "paste":
+                    receipt = controller.paste_current_draft()
+                    await websocket.send_json({
+                        "type": "pasted",
+                        "outcome": receipt.outcome,
+                        "evidence": receipt.evidence,
+                    })
+
+        except WebSocketDisconnect:
+            pass
+        except Exception as e:
+            try:
+                await websocket.send_json({"type": "error", "message": str(e)})
+            except Exception:
+                pass
 
     return app

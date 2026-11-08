@@ -19,20 +19,98 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import org.json.JSONObject
 
 class FloatingOrbService : Service() {
 
     private lateinit var windowManager: WindowManager
     private var overlayView: FrameLayout? = null
     private val scope = CoroutineScope(Dispatchers.Main + Job())
-    private val apiClient = WrenApiClient()
+    private lateinit var apiClient: WrenApiClient
+    private var webSocket: WebSocket? = null
+    private var orbView: TextView? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val prefs = getSharedPreferences("wren_prefs", Context.MODE_PRIVATE)
+        val host = prefs.getString("host_url", "http://192.168.4.28:8765") ?: "http://192.168.4.28:8765"
+        apiClient = WrenApiClient(host)
         createFloatingView()
+        initWebSocket()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        intent?.getStringExtra("host_url")?.let { host ->
+            apiClient.updateBaseUrl(host)
+            initWebSocket()
+        }
+        return START_STICKY
+    }
+
+    private fun initWebSocket() {
+        webSocket?.close(1000, "Reconnecting")
+        webSocket = apiClient.connectWebSocket(object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                scope.launch {
+                    setOrbStatus(Color.parseColor("#38BDF8"), "W")
+                }
+            }
+
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                try {
+                    val json = JSONObject(text)
+                    when (json.optString("type")) {
+                        "state_changed" -> {
+                            val state = json.optString("state")
+                            scope.launch {
+                                when (state) {
+                                    "LISTENING" -> setOrbStatus(Color.parseColor("#EF4444"), "●")
+                                    "PROCESSING" -> setOrbStatus(Color.parseColor("#F59E0B"), "◌")
+                                    "DRAFT_READY" -> setOrbStatus(Color.parseColor("#10B981"), "✓")
+                                    else -> setOrbStatus(Color.parseColor("#38BDF8"), "W")
+                                }
+                            }
+                        }
+                        "draft_ready" -> {
+                            val draft = json.optJSONObject("draft")
+                            val textContent = draft?.optString("text") ?: ""
+                            scope.launch {
+                                setOrbStatus(Color.parseColor("#10B981"), "✓")
+                                // Attempt automatic focus paste into current active Android app input
+                                val a11y = WrenAccessibilityService.instance
+                                if (a11y != null && textContent.isNotEmpty()) {
+                                    val ok = a11y.pasteText(textContent)
+                                    if (ok) {
+                                        Toast.makeText(applicationContext, "Pasted into app!", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        Toast.makeText(applicationContext, "Draft Ready: ${textContent.take(60)}...", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("FloatingOrbService", "WebSocket parse error", e)
+                }
+            }
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                scope.launch {
+                    setOrbStatus(Color.parseColor("#64748B"), "!")
+                }
+            }
+        })
+    }
+
+    private fun setOrbStatus(color: Int, text: String) {
+        orbView?.setBackgroundColor(color)
+        orbView?.text = text
     }
 
     private fun createFloatingView() {
@@ -65,9 +143,9 @@ class FloatingOrbService : Service() {
             val size = (56 * resources.displayMetrics.density).toInt()
             layoutParams = FrameLayout.LayoutParams(size, size)
         }
+        orbView = orb
         container.addView(orb)
 
-        // Make orb draggable
         container.setOnTouchListener(object : View.OnTouchListener {
             private var initialX = 0
             private var initialY = 0
@@ -113,23 +191,20 @@ class FloatingOrbService : Service() {
     }
 
     private fun onOrbClicked() {
-        Toast.makeText(this, "Wren Activated! Reading screen context...", Toast.LENGTH_SHORT).show()
         val a11y = WrenAccessibilityService.instance
-        if (a11y != null) {
-            val screenContext = a11y.extractScreenContext()
-            Log_d("Screen context captured: ${screenContext.take(100)}")
-            // In a full session, trigger STT / backend query and paste result
-        } else {
-            Toast.makeText(this, "Enable Wren Accessibility Service in Settings!", Toast.LENGTH_LONG).show()
-        }
-    }
+        val screenCtx = a11y?.extractScreenContext() ?: "No screen context"
+        Toast.makeText(this, "Screen: ${screenCtx.take(40)}...", Toast.LENGTH_SHORT).show()
 
-    private fun Log_d(msg: String) {
-        android.util.Log.d("FloatingOrb", msg)
+        // Send start/stop trigger over WebSocket or HTTP
+        webSocket?.let { ws ->
+            val payload = JSONObject().put("action", "ping").toString()
+            ws.send(payload)
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        webSocket?.close(1000, "Service destroyed")
         overlayView?.let { windowManager.removeView(it) }
     }
 }

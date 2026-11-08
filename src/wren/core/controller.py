@@ -31,6 +31,7 @@ class WrenController:
         self.screen_inspector = ScreenInspector()
         self.file_ingest = UnifiedFileIngest()
         self.attached_files: list[dict] = []
+        self.mode: str = "elevate"
         
         if stt_provider == "mock":
             self.stt: BaseSTT = MockSTT()
@@ -52,6 +53,14 @@ class WrenController:
     @property
     def last_diff(self) -> str:
         return self._last_diff
+
+    def set_mode(self, mode: str) -> str:
+        """Set operation mode: 'elevate' | 'agent' | 'brainstorm'."""
+        valid_modes = {"elevate", "agent", "brainstorm"}
+        if mode not in valid_modes:
+            raise ValueError(f"Invalid mode '{mode}'. Valid modes: {valid_modes}")
+        self.mode = mode
+        return self.mode
 
     def start_listening(self) -> None:
         """
@@ -89,7 +98,7 @@ class WrenController:
             )
             prompt_text = f"{context_blocks}\n\n[Instruction / Speech]:\n{raw_text}"
 
-        elev_res = self.elevator.elevate(prompt_text)
+        elev_res = self.elevator.elevate(prompt_text, mode=self.mode)
         self._last_diff = elev_res.diff
 
         draft = self.buffer.create_draft_from_utterance(
@@ -118,6 +127,7 @@ class WrenController:
             raw_text=instruction,
             instruction=instruction,
             current_draft_text=self.current_draft.text,
+            mode=self.mode,
         )
         self._last_diff = elev_res.diff
 

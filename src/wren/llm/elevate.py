@@ -22,6 +22,31 @@ Apply the requested changes faithfully while keeping all unaffected facts, names
 Return ONLY the revised text.
 """
 
+SYSTEM_AGENT_PROMPT = """You are Wren's Agent Prompt Synthesizer.
+Your mission is to translate rough spoken thoughts into an ultra-precise,
+battle-tested Agent Directive for Devin or Antigravity under the DGF Five-Gate Engineering Standard.
+Structure the output strictly with:
+# Agent Directive: <Title>
+## 1. Goal & Intent
+## 2. Ceremony & Rung (pkg-minimalist-intake / Ponytail Ladder)
+## 3. Blast Radius ([NEW], [MODIFY], NEVER TOUCH)
+## 4. Subsystem NEVER Rules
+## 5. Hermetic Verification Command (Five Gates)
+
+Return ONLY the formatted markdown directive.
+"""
+
+SYSTEM_BRAINSTORM_PROMPT = """You are Wren's Thought Partner & Brainstorming Engine.
+The user is bouncing an idea or architectural concept off you.
+Be sharp, insightful, and concise:
+1. Validate the core value proposition.
+2. Highlight 2 key trade-offs or hidden architectural risks.
+3. Propose 2 high-impact execution vectors.
+4. Ask 1 decisive clarifying question to determine the next step.
+
+Keep it punchy, conversational, and grounded in DGF standards.
+"""
+
 
 @dataclass
 class ElevationResult:
@@ -31,6 +56,7 @@ class ElevationResult:
     intent_preserved: bool
     model: str
     fallback_used: bool = False
+    mode: str = "elevate"
 
 
 class PromptElevator:
@@ -86,14 +112,23 @@ class PromptElevator:
         raw_text: str,
         instruction: str | None = None,
         current_draft_text: str | None = None,
+        mode: str = "elevate",
     ) -> ElevationResult:
         """
-        Call FreeLLMAPI to clean up and elevate the text.
+        Call FreeLLMAPI to clean up, synthesize agent directives, or brainstorm.
         Falls back to normalized raw text if LLM is unavailable.
         """
+        temperature = 0.2
         if current_draft_text and instruction:
             system_prompt = SYSTEM_REVISE_PROMPT
             user_content = f"CURRENT DRAFT:\n{current_draft_text}\n\nINSTRUCTION:\n{instruction}"
+        elif mode == "agent":
+            system_prompt = SYSTEM_AGENT_PROMPT
+            user_content = f"RAW SPOKEN DIRECTIVE:\n{raw_text}"
+        elif mode == "brainstorm":
+            system_prompt = SYSTEM_BRAINSTORM_PROMPT
+            user_content = f"CONCEPT / IDEA:\n{raw_text}"
+            temperature = 0.4
         else:
             system_prompt = SYSTEM_ELEVATE_PROMPT
             user_content = f"RAW SPOKEN TEXT:\n{raw_text}"
@@ -104,7 +139,7 @@ class PromptElevator:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ],
-            "temperature": 0.2,
+            "temperature": temperature,
         }
 
         try:
@@ -119,7 +154,7 @@ class PromptElevator:
                     # Strip wrapping quotes if LLM added them
                     if elevated_text.startswith('"') and elevated_text.endswith('"'):
                         elevated_text = elevated_text[1:-1].strip()
-                    
+
                     diff = self.compute_diff(raw_text, elevated_text)
                     intent_ok = self.verify_intent(raw_text, elevated_text)
                     return ElevationResult(
@@ -129,6 +164,7 @@ class PromptElevator:
                         intent_preserved=intent_ok,
                         model=self.model,
                         fallback_used=False,
+                        mode=mode,
                     )
         except Exception:
             pass
@@ -147,4 +183,5 @@ class PromptElevator:
             intent_preserved=True,
             model="local-deterministic-fallback",
             fallback_used=True,
+            mode=mode,
         )

@@ -1,77 +1,167 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#0F172A"
-    android:orientation="vertical"
-    android:padding="24dp">
+    android:background="#090D16">
 
-    <TextView
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Wren Companion"
-        android:textColor="#38BDF8"
-        android:textSize="26sp"
-        android:textStyle="bold" />
+        android:orientation="vertical"
+        android:padding="20dp">
 
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:text="Voice Assistant &amp; Screen Bridge"
-        android:textColor="#94A3B8"
-        android:textSize="14sp" />
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Wren Companion"
+            android:textColor="#38BDF8"
+            android:textSize="26sp"
+            android:textStyle="bold" />
 
-    <TextView
-        android:id="@+id/status_text"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="20dp"
-        android:background="#1E293B"
-        android:padding="16dp"
-        android:textColor="#F8FAFC"
-        android:textSize="14sp" />
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="Everyday Voice &amp; Screen Agent Bridge"
+            android:textColor="#94A3B8"
+            android:textSize="13sp" />
 
-    <EditText
-        android:id="@+id/edit_host"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:background="#1E293B"
-        android:hint="Desktop Host: http://192.168.1.50:8765"
-        android:padding="12dp"
-        android:textColor="#F8FAFC"
-        android:textColorHint="#64748B" />
+        <TextView
+            android:id="@+id/status_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="#121826"
+            android:padding="14dp"
+            android:textColor="#F8FAFC"
+            android:textSize="13sp" />
 
-    <Button
-        android:id="@+id/btn_overlay"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:text="1. Grant Floating Overlay Permission" />
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="Workstation Connect URL:"
+            android:textColor="#94A3B8"
+            android:textSize="12sp"
+            android:textStyle="bold" />
 
-    <Button
-        android:id="@+id/btn_a11y"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:text="2. Enable Accessibility Service" />
+        <EditText
+            android:id="@+id/edit_host"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:background="#121826"
+            android:hint="http://192.168.4.28:8765"
+            android:padding="12dp"
+            android:textColor="#F8FAFC"
+            android:textColorHint="#64748B"
+            android:textSize="13sp" />
 
-    <Button
-        android:id="@+id/btn_mic"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:text="3. Grant Microphone Permission" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="horizontal">
 
-    <Button
-        android:id="@+id/btn_start_orb"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="20dp"
-        android:backgroundTint="#38BDF8"
-        android:text="Launch Floating Wren Orb"
-        android:textColor="#0F172A"
-        android:textStyle="bold" />
+            <Button
+                android:id="@+id/btn_preset_lan"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginEnd="4dp"
+                android:backgroundTint="#1E293B"
+                android:text="LAN (192.168.4.28)"
+                android:textSize="11sp" />
 
-</LinearLayout>
+            <Button
+                android:id="@+id/btn_preset_tailscale"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="4dp"
+                android:backgroundTint="#1E293B"
+                android:text="Tailscale (100.90.174.74)"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="Mode Selection:"
+            android:textColor="#94A3B8"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btn_mode_elevate"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:backgroundTint="#1E293B"
+                android:text="✨ Elevate"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btn_mode_agent"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="4dp"
+                android:backgroundTint="#1E293B"
+                android:text="🤖 Agent"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btn_mode_brainstorm"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="4dp"
+                android:backgroundTint="#1E293B"
+                android:text="💡 Brainstorm"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/btn_overlay"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:backgroundTint="#1E293B"
+            android:text="1. Grant Floating Overlay Permission" />
+
+        <Button
+            android:id="@+id/btn_a11y"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:backgroundTint="#1E293B"
+            android:text="2. Enable Accessibility Service" />
+
+        <Button
+            android:id="@+id/btn_mic"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:backgroundTint="#1E293B"
+            android:text="3. Grant Microphone Permission" />
+
+        <Button
+            android:id="@+id/btn_start_orb"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:backgroundTint="#38BDF8"
+            android:text="Launch Floating Wren Orb"
+            android:textColor="#090D16"
+            android:textStyle="bold" />
+
+    </LinearLayout>
+</ScrollView>
