@@ -23,7 +23,6 @@ hiddenimports = [
     'fastapi',
     'pydantic',
     'faster_whisper',
-    'soundfile',
     'numpy',
     'pyperclip',
     'webview',
