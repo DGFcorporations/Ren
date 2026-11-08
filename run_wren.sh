@@ -7,6 +7,9 @@ cd "$SCRIPT_DIR"
 
 echo "=== Launching Wren Everyday Assistant ==="
 
+# Auth token for non-loopback clients (defaults to built-in pilot token)
+export WREN_AUTH_TOKEN="${WREN_AUTH_TOKEN:-wren-pilot-auth-2026-dgf}"
+
 # Check virtualenv
 if [ -f ".venv/bin/python" ]; then
     PYTHON_EXEC=".venv/bin/python"

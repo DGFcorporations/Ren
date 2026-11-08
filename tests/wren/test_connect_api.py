@@ -2,6 +2,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastapi import WebSocketDisconnect
 from fastapi.testclient import TestClient
 
 from wren.core.controller import WrenController
@@ -83,3 +84,80 @@ def test_websocket_connect_lifecycle(test_controller):
             elev_msg = websocket.receive_json()
             assert elev_msg["type"] == "elevated"
             assert elev_msg["elevated_text"] == "# Directive: Build App"
+
+
+def test_nonloopback_auth_protection(test_controller):
+    """Verify non-loopback requests without valid token are rejected with 401."""
+    app = create_app(test_controller, auth_token="test-secret-token")
+    client = TestClient(app)
+
+    # 1. Loopback without token succeeds
+    res_loopback = client.get("/api/connect")
+    assert res_loopback.status_code == 200
+
+    # 2. Non-loopback host without token returns 401
+    res_unauth = client.get("/api/screen/capture", headers={"host": "192.168.4.28"})
+    assert res_unauth.status_code == 401
+    assert "Unauthorized" in res_unauth.json()["detail"]
+    assert res_unauth.headers.get("www-authenticate") == "Bearer"
+
+    # 3. Non-loopback read_file without token returns 401
+    res_read_unauth = client.post(
+        "/api/files/read",
+        json={"file_path": "/home/chandler/Dev/README.md"},
+        headers={"host": "192.168.4.28"},
+    )
+    assert res_read_unauth.status_code == 401
+
+    # 4. Non-loopback with valid Bearer token succeeds
+    res_bearer = client.get(
+        "/api/screen/capture",
+        headers={"host": "192.168.4.28", "authorization": "Bearer test-secret-token"},
+    )
+    assert res_bearer.status_code == 200
+
+    # 5. Non-loopback with valid X-Wren-Token succeeds
+    res_custom = client.get(
+        "/api/screen/capture",
+        headers={"host": "192.168.4.28", "x-wren-token": "test-secret-token"},
+    )
+    assert res_custom.status_code == 200
+
+    # 6. Non-loopback with valid query param token succeeds
+    res_query = client.get(
+        "/api/screen/capture?token=test-secret-token",
+        headers={"host": "192.168.4.28"},
+    )
+    assert res_query.status_code == 200
+
+    # 7. Non-loopback with invalid token returns 401
+    res_bad_token = client.get(
+        "/api/screen/capture",
+        headers={"host": "192.168.4.28", "authorization": "Bearer wrong-token"},
+    )
+    assert res_bad_token.status_code == 401
+
+
+def test_nonloopback_websocket_auth(test_controller):
+    """Verify non-loopback WebSockets require token."""
+    app = create_app(test_controller, auth_token="test-secret-token")
+    client = TestClient(app)
+
+    # 1. Loopback WebSocket connects cleanly
+    with client.websocket_connect("/ws/connect") as ws:
+        msg = ws.receive_json()
+        assert msg["type"] == "handshake"
+
+    # 2. Non-loopback WebSocket without token closes with 1008
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/connect", headers={"host": "192.168.4.28"}):
+            pass
+    assert exc_info.value.code == 1008
+
+    # 3. Non-loopback WebSocket with query token succeeds
+    with client.websocket_connect(
+        "/ws/connect?token=test-secret-token",
+        headers={"host": "192.168.4.28"},
+    ) as ws:
+        msg = ws.receive_json()
+        assert msg["type"] == "handshake"

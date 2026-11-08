@@ -12,11 +12,22 @@ import okhttp3.WebSocketListener
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
-class WrenApiClient(private var baseUrl: String = "http://192.168.4.28:8765") {
+class WrenApiClient(
+    private var baseUrl: String = "http://192.168.4.28:8765",
+    private var authToken: String = "wren-pilot-auth-2026-dgf"
+) {
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
+        .addInterceptor { chain ->
+            val original = chain.request()
+            val reqBuilder = original.newBuilder()
+            if (authToken.isNotBlank()) {
+                reqBuilder.header("Authorization", "Bearer $authToken")
+            }
+            chain.proceed(reqBuilder.build())
+        }
         .build()
 
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
@@ -26,6 +37,12 @@ class WrenApiClient(private var baseUrl: String = "http://192.168.4.28:8765") {
     }
 
     fun getBaseUrl(): String = baseUrl
+
+    fun setAuthToken(token: String) {
+        authToken = token.trim()
+    }
+
+    fun getAuthToken(): String = authToken
 
     suspend fun getConnectInfo(): Result<JSONObject> = withContext(Dispatchers.IO) {
         try {
@@ -109,7 +126,8 @@ class WrenApiClient(private var baseUrl: String = "http://192.168.4.28:8765") {
      * for real-time draft synchronization and audio streaming.
      */
     fun connectWebSocket(listener: WebSocketListener): WebSocket {
-        val wsUrl = baseUrl.replace("http://", "ws://").replace("https://", "wss://") + "/ws/connect"
+        val tokenParam = if (authToken.isNotBlank()) "?token=$authToken" else ""
+        val wsUrl = baseUrl.replace("http://", "ws://").replace("https://", "wss://") + "/ws/connect" + tokenParam
         val request = Request.Builder().url(wsUrl).build()
         return client.newWebSocket(request, listener)
     }

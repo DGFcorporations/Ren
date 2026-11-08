@@ -1,15 +1,47 @@
 """Wren Floating Orb & Draft Preview Web Server."""
 
 import json
+import os
+import secrets
 import socket
 import subprocess
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from wren.core.controller import WrenController
 from wren.files.ingest import FileIngestError
+
+DEFAULT_WREN_TOKEN = "wren-pilot-auth-2026-dgf"
+
+
+def is_loopback_client(client_host: str | None, request_host: str | None) -> bool:
+    """Determine whether the request originates from a local loopback interface.
+
+    Both the client peer IP and target hostname must resolve to loopback.
+    """
+    loopback_peers = {"127.0.0.1", "::1", "localhost", "testclient"}
+    loopback_targets = {"127.0.0.1", "::1", "localhost", "testserver"}
+
+    if not client_host or client_host not in loopback_peers:
+        return False
+    if request_host and request_host not in loopback_targets:
+        return False
+    return True
+
+
+def extract_token_from_request(request: Request) -> str | None:
+    """Extract auth token from Authorization header, X-Wren-Token, or query parameter."""
+    auth_hdr = request.headers.get("authorization", "")
+    if auth_hdr.startswith("Bearer "):
+        return auth_hdr[7:].strip()
+    if "x-wren-token" in request.headers:
+        return request.headers["x-wren-token"].strip()
+    token_param = request.query_params.get("token")
+    if token_param:
+        return token_param.strip()
+    return None
 
 
 class ReviseRequest(BaseModel):
@@ -53,11 +85,32 @@ def get_network_ips() -> dict[str, str]:
     return {"lan_ip": lan_ip, "tailscale_ip": tailscale_ip}
 
 
-def create_app(controller: WrenController | None = None) -> FastAPI:
+def create_app(
+    controller: WrenController | None = None,
+    auth_token: str | None = None,
+) -> FastAPI:
     if controller is None:
         controller = WrenController()
 
+    active_auth_token = auth_token or os.environ.get("WREN_AUTH_TOKEN", DEFAULT_WREN_TOKEN)
+
     app = FastAPI(title="Wren Assistant")
+
+    @app.middleware("http")
+    async def enforce_nonloopback_auth(request: Request, call_next):
+        client_host = request.client.host if request.client else None
+        request_host = request.url.hostname
+
+        if not is_loopback_client(client_host, request_host):
+            token = extract_token_from_request(request)
+            if not token or not secrets.compare_digest(token, active_auth_token):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Unauthorized: valid bearer token required for non-loopback access"},
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+
+        return await call_next(request)
 
     HTML_CONTENT = """<!DOCTYPE html>
 <html lang="en">
@@ -515,6 +568,21 @@ def create_app(controller: WrenController | None = None) -> FastAPI:
 </div>
 
 <script>
+const urlParams = new URLSearchParams(window.location.search);
+const authToken = urlParams.get('token') || '';
+
+if (authToken) {
+  const originalFetch = window.fetch;
+  window.fetch = function(url, options = {}) {
+    const opts = { ...options };
+    opts.headers = new Headers(opts.headers || {});
+    if (!opts.headers.has('Authorization')) {
+      opts.headers.set('Authorization', `Bearer ${authToken}`);
+    }
+    return originalFetch(url, opts);
+  };
+}
+
 let currentState = "IDLE";
 let currentMode = "elevate";
 let isListening = false;
@@ -765,6 +833,7 @@ fetchConnect();
             "lan_ip": ips["lan_ip"],
             "tailscale_ip": ips["tailscale_ip"],
             "port": 8765,
+            "auth_required": True,
             "endpoints": {
                 "ws_connect": "/ws/connect",
                 "status": "/api/status",
@@ -933,6 +1002,22 @@ fetchConnect();
     @app.websocket("/ws/connect")
     async def websocket_connect(websocket: WebSocket):
         """Bidirectional WebSocket for mobile companion streaming and real-time synchronization."""
+        client_host = websocket.client.host if websocket.client else None
+        request_host = websocket.url.hostname
+
+        if not is_loopback_client(client_host, request_host):
+            token = websocket.query_params.get("token") or websocket.headers.get("x-wren-token")
+            auth_hdr = websocket.headers.get("authorization", "")
+            if auth_hdr.startswith("Bearer "):
+                token = auth_hdr[7:].strip()
+
+            if not token or not secrets.compare_digest(token, active_auth_token):
+                await websocket.close(
+                    code=1008,
+                    reason="Unauthorized: valid token required for non-loopback access",
+                )
+                return
+
         await websocket.accept()
         # Send initial status handshake
         await websocket.send_json({

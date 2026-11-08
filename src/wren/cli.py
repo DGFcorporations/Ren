@@ -1,18 +1,24 @@
 """Wren command-line launcher and desktop server runner."""
 import argparse
+import os
 import threading
 import time
 
 import uvicorn
 
 from wren.core.controller import WrenController
-from wren.ui.orb_preview import create_app
+from wren.ui.orb_preview import DEFAULT_WREN_TOKEN, create_app
 
 
 def main():
     parser = argparse.ArgumentParser(description="Wren: Local Voice & Text Assistant")
     parser.add_argument("--host", default="0.0.0.0", help="Host interface (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8765, help="Port (default: 8765)")
+    parser.add_argument(
+        "--token",
+        default=os.environ.get("WREN_AUTH_TOKEN", DEFAULT_WREN_TOKEN),
+        help="Shared bearer token for non-loopback clients (default: WREN_AUTH_TOKEN or built-in token)",
+    )
     parser.add_argument("--model", default="auto", help="FreeLLMAPI model (default: auto)")
     parser.add_argument(
         "--stt",
@@ -27,14 +33,16 @@ def main():
     )
     args = parser.parse_args()
 
+    token_param = f"?token={args.token}" if args.token else ""
     print(f"=== Starting Wren Desktop Assistant on port {args.port} ===")
     print(f"Local Widget: http://127.0.0.1:{args.port}")
-    print(f"LAN Companion: http://192.168.4.28:{args.port}")
-    print(f"Tailscale Companion: http://100.90.174.74:{args.port}")
+    print(f"LAN Companion: http://192.168.4.28:{args.port}{token_param}")
+    print(f"Tailscale Companion: http://100.90.174.74:{args.port}{token_param}")
+    print(f"Auth: {'Bearer token required for non-loopback' if args.token else 'None'}")
     print(f"STT: {args.stt} | LLM Model: {args.model}")
 
     controller = WrenController(stt_provider=args.stt, model=args.model)
-    app = create_app(controller)
+    app = create_app(controller, auth_token=args.token)
 
     if args.native:
         import webview
