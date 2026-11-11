@@ -34,6 +34,7 @@ VALID_TRANSITIONS: dict[WrenState, set[WrenState]] = {
     WrenState.LISTENING: {WrenState.PROCESSING, WrenState.IDLE, WrenState.MUTED, WrenState.ERROR},
     WrenState.PROCESSING: {WrenState.DRAFT_READY, WrenState.IDLE, WrenState.ERROR},
     WrenState.DRAFT_READY: {
+        WrenState.LISTENING,         # Start a fresh dictation; invalidate old clipboard review
         WrenState.PROCESSING,       # Voice/text revision loop
         WrenState.COPY_APPROVED,    # User "copy" command
         WrenState.TARGET_VERIFY,    # Direct paste workflow
@@ -41,7 +42,14 @@ VALID_TRANSITIONS: dict[WrenState, set[WrenState]] = {
         WrenState.ERROR,
     },
     WrenState.COPY_APPROVED: {WrenState.CLIPBOARD_WRITTEN, WrenState.IDLE, WrenState.ERROR},
-    WrenState.CLIPBOARD_WRITTEN: {WrenState.TARGET_VERIFY, WrenState.IDLE, WrenState.ERROR},
+    WrenState.CLIPBOARD_WRITTEN: {
+        WrenState.LISTENING,         # Start a fresh dictation; invalidate old clipboard review
+        WrenState.PROCESSING,       # Revise the draft; invalidate old clipboard review
+        WrenState.DRAFT_READY,      # Revert the draft; require a fresh copy/review
+        WrenState.TARGET_VERIFY,
+        WrenState.IDLE,
+        WrenState.ERROR,
+    },
     WrenState.TARGET_VERIFY: {WrenState.PASTE_PENDING_APPROVAL, WrenState.IDLE, WrenState.ERROR},
     WrenState.PASTE_PENDING_APPROVAL: {WrenState.PASTING, WrenState.IDLE, WrenState.ERROR},
     WrenState.PASTING: {WrenState.PASTED, WrenState.ERROR},

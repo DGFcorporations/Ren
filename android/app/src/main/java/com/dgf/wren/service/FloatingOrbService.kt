@@ -1,6 +1,9 @@
 package com.dgf.wren.service
 
 import android.app.Service
+import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
@@ -10,8 +13,10 @@ import android.os.IBinder
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.dgf.wren.net.WrenApiClient
@@ -32,6 +37,7 @@ class FloatingOrbService : Service() {
     private lateinit var apiClient: WrenApiClient
     private var webSocket: WebSocket? = null
     private var orbView: TextView? = null
+    private var pendingDraftText: String? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -82,15 +88,13 @@ class FloatingOrbService : Service() {
                             val textContent = draft?.optString("text") ?: ""
                             scope.launch {
                                 setOrbStatus(Color.parseColor("#10B981"), "✓")
-                                // Attempt automatic focus paste into current active Android app input
-                                val a11y = WrenAccessibilityService.instance
-                                if (a11y != null && textContent.isNotEmpty()) {
-                                    val ok = a11y.pasteText(textContent)
-                                    if (ok) {
-                                        Toast.makeText(applicationContext, "Pasted into app!", Toast.LENGTH_SHORT).show()
-                                    } else {
-                                        Toast.makeText(applicationContext, "Draft Ready: ${textContent.take(60)}...", Toast.LENGTH_SHORT).show()
-                                    }
+                                if (textContent.isNotBlank()) {
+                                    pendingDraftText = textContent
+                                    Toast.makeText(
+                                        applicationContext,
+                                        "Draft ready. Tap Wren to review before copying.",
+                                        Toast.LENGTH_LONG
+                                    ).show()
                                 }
                             }
                         }
@@ -191,6 +195,12 @@ class FloatingOrbService : Service() {
     }
 
     private fun onOrbClicked() {
+        val draft = pendingDraftText
+        if (!draft.isNullOrBlank()) {
+            showDraftPreview(draft)
+            return
+        }
+
         val a11y = WrenAccessibilityService.instance
         val screenCtx = a11y?.extractScreenContext() ?: "No screen context"
         Toast.makeText(this, "Screen: ${screenCtx.take(40)}...", Toast.LENGTH_SHORT).show()
@@ -200,6 +210,54 @@ class FloatingOrbService : Service() {
             val payload = JSONObject().put("action", "ping").toString()
             ws.send(payload)
         }
+    }
+
+    private fun showDraftPreview(text: String) {
+        val density = resources.displayMetrics.density
+        val preview = TextView(this).apply {
+            this.text = text
+            textSize = 16f
+            setTextIsSelectable(true)
+            setPadding((16 * density).toInt(), (12 * density).toInt(), (16 * density).toInt(), (12 * density).toInt())
+        }
+        val scrollView = ScrollView(this).apply {
+            addView(
+                preview,
+                ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                (280 * density).toInt()
+            )
+        }
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Review draft")
+            .setMessage("Review the full text. Copy does not paste into another app.")
+            .setView(scrollView)
+            .setNegativeButton("Close", null)
+            .setPositiveButton("Copy for review") { _, _ ->
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("Wren reviewed draft", text))
+                setOrbStatus(Color.parseColor("#818CF8"), "C")
+                Toast.makeText(
+                    applicationContext,
+                    "Copied. Switch to the chosen app and paste manually.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            .create()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            dialog.window?.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
+        } else {
+            @Suppress("DEPRECATION")
+            dialog.window?.setType(WindowManager.LayoutParams.TYPE_PHONE)
+        }
+        dialog.show()
     }
 
     override fun onDestroy() {

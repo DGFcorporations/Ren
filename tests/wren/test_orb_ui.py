@@ -1,4 +1,5 @@
 """Tests for Wren Floating Orb & Draft Preview Web Server."""
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -31,6 +32,8 @@ def test_index_page(mock_controller):
     assert res.status_code == 200
     assert "Wren Assistant" in res.text
     assert "draft-box" in res.text
+    assert "Copy for review" in res.text
+    assert "Paste reviewed" in res.text
 
 
 def test_status_endpoint(mock_controller):
@@ -41,6 +44,7 @@ def test_status_endpoint(mock_controller):
     data = res.json()
     assert data["state"] == "IDLE"
     assert data["active_target"]["wm_class"] == "gedit"
+    assert data["clipboard_preview_ready"] is False
 
 
 def test_listen_and_elevate_endpoints(mock_controller):
@@ -105,22 +109,45 @@ def test_copy_and_paste_endpoints(mock_controller):
     client = TestClient(app)
     
     u = mock_controller.buffer.record_utterance("meeting notes")
-    mock_controller.buffer.create_draft_from_utterance(u.id, "Meeting Notes.")
+    draft = mock_controller.buffer.create_draft_from_utterance(u.id, "Meeting Notes.")
     mock_controller.state_machine.transition(WrenState.DRAFT_READY)
     
-    with patch.object(mock_controller.clipboard, "write", return_value="hash-123"):
+    with patch.object(mock_controller.clipboard, "write", return_value=draft.text_sha256):
         res_copy = client.post("/api/copy")
         assert res_copy.status_code == 200
         assert res_copy.json()["status"] == "copied"
+        assert mock_controller.clipboard_preview_ready is True
 
     paste_ret = {"status": "pasted", "shortcut": "ctrl+v"}
     tgt = mock_controller.active_target
     with (
         patch.object(mock_controller.targets, "paste_into_target", return_value=paste_ret),
         patch.object(mock_controller.targets, "get_active_target", return_value=tgt),
-        patch.object(mock_controller.clipboard, "safe_restore", return_value=True),
+        patch.object(
+            mock_controller.clipboard,
+            "snapshot",
+            return_value=SimpleNamespace(content_hash=draft.text_sha256),
+        ),
     ):
         res_paste = client.post("/api/paste")
         assert res_paste.status_code == 200
         assert res_paste.json()["status"] == "pasted"
         assert res_paste.json()["outcome"] == "done"
+
+
+def test_paste_endpoint_requires_explicit_copy_for_review(mock_controller):
+    app = create_app(mock_controller)
+    client = TestClient(app)
+    u = mock_controller.buffer.record_utterance("meeting notes")
+    mock_controller.buffer.create_draft_from_utterance(u.id, "Meeting Notes.")
+    mock_controller.state_machine.transition(WrenState.DRAFT_READY)
+
+    with patch.object(mock_controller.clipboard, "write") as write_clipboard, patch.object(
+        mock_controller.targets, "paste_into_target"
+    ) as paste_into_target:
+        response = client.post("/api/paste")
+
+    assert response.status_code == 400
+    assert "Copy the current draft for review" in response.json()["detail"]
+    write_clipboard.assert_not_called()
+    paste_into_target.assert_not_called()

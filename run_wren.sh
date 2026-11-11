@@ -7,8 +7,7 @@ cd "$SCRIPT_DIR"
 
 echo "=== Launching Wren Everyday Assistant ==="
 
-# Auth token for non-loopback clients (defaults to built-in pilot token)
-export WREN_AUTH_TOKEN="${WREN_AUTH_TOKEN:-wren-pilot-auth-2026-dgf}"
+# Remote access is not configured here. The CLI binds to loopback by default.
 
 # Check virtualenv
 if [ -f ".venv/bin/python" ]; then
@@ -20,8 +19,8 @@ fi
 # Detect display
 if [ -n "${DISPLAY:-}" ]; then
     echo "Desktop environment detected ($DISPLAY). Launching native floating window..."
-    exec "$PYTHON_EXEC" -m wren.cli --native --host 0.0.0.0 "$@"
+    exec "$PYTHON_EXEC" -m wren.cli --native "$@"
 else
-    echo "Headless environment detected. Launching web service on port 8765..."
-    exec "$PYTHON_EXEC" -m wren.cli --port 8765 --host 0.0.0.0 "$@"
+    echo "Headless environment detected. Launching local-only web service on port 8765..."
+    exec "$PYTHON_EXEC" -m wren.cli --port 8765 "$@"
 fi

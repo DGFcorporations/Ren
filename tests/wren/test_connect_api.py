@@ -25,6 +25,9 @@ def test_get_connect_api(test_controller):
     assert data["status"] == "ready"
     assert "lan_ip" in data
     assert "tailscale_ip" in data
+    assert data["lan_ip"] is None
+    assert data["tailscale_ip"] is None
+    assert data["remote_access_ready"] is False
     assert data["port"] == 8765
     assert data["mode"] == "elevate"
     assert "/ws/connect" in data["endpoints"]["ws_connect"]
@@ -123,12 +126,12 @@ def test_nonloopback_auth_protection(test_controller):
     )
     assert res_custom.status_code == 200
 
-    # 6. Non-loopback with valid query param token succeeds
+    # 6. Query-string credentials are rejected to avoid leaking tokens in URLs/logs
     res_query = client.get(
         "/api/screen/capture?token=test-secret-token",
         headers={"host": "192.168.4.28"},
     )
-    assert res_query.status_code == 200
+    assert res_query.status_code == 401
 
     # 7. Non-loopback with invalid token returns 401
     res_bad_token = client.get(
@@ -136,6 +139,15 @@ def test_nonloopback_auth_protection(test_controller):
         headers={"host": "192.168.4.28", "authorization": "Bearer wrong-token"},
     )
     assert res_bad_token.status_code == 401
+
+
+def test_nonloopback_auth_fails_closed_without_configured_token(test_controller, monkeypatch):
+    monkeypatch.delenv("WREN_AUTH_TOKEN", raising=False)
+    app = create_app(test_controller, auth_token="")
+    client = TestClient(app)
+
+    response = client.get("/api/connect", headers={"host": "192.168.4.28"})
+    assert response.status_code == 401
 
 
 def test_nonloopback_websocket_auth(test_controller):
@@ -154,10 +166,19 @@ def test_nonloopback_websocket_auth(test_controller):
             pass
     assert exc_info.value.code == 1008
 
-    # 3. Non-loopback WebSocket with query token succeeds
+    # 3. Query-string WebSocket credentials are rejected
+    with pytest.raises(WebSocketDisconnect) as query_exc:
+        with client.websocket_connect(
+            "/ws/connect?token=test-secret-token",
+            headers={"host": "192.168.4.28"},
+        ):
+            pass
+    assert query_exc.value.code == 1008
+
+    # 4. Header bearer token succeeds
     with client.websocket_connect(
-        "/ws/connect?token=test-secret-token",
-        headers={"host": "192.168.4.28"},
+        "/ws/connect",
+        headers={"host": "192.168.4.28", "authorization": "Bearer test-secret-token"},
     ) as ws:
         msg = ws.receive_json()
         assert msg["type"] == "handshake"

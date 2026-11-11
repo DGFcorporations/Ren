@@ -1,6 +1,10 @@
 # Workbench — G1 offline pilot
 
-**Development branch:** `pilot/voice-memory-browser` in `DGFcorporations/Ren`.
+**G1 baseline branch:** `pilot/voice-memory-browser` in `DGFcorporations/Ren`.
+
+> Wren's separate desktop/Android prototype is on `feature/wren-desktop-pilot`.
+> Its current capabilities, test status, blockers, and staged path are in the
+> [Wren readiness handoff](docs/WREN_READINESS.md); it is not yet a shippable app.
 
 A self-contained, local rehearsal of an approval-gated memory-to-browser workflow.
 It deliberately contains **no live model or speech client, real-account browser

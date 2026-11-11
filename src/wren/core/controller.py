@@ -41,6 +41,9 @@ class WrenController:
         self.active_target: TargetWindow | None = None
         self._prior_clipboard_snap: ClipSnapshot | None = None
         self._last_diff: str = ""
+        self._prepared_draft_id: str | None = None
+        self._prepared_draft_hash: str | None = None
+        self._prepared_clipboard_hash: str | None = None
 
     @property
     def state(self) -> WrenState:
@@ -53,6 +56,23 @@ class WrenController:
     @property
     def last_diff(self) -> str:
         return self._last_diff
+
+    @property
+    def clipboard_preview_ready(self) -> bool:
+        """Whether the current draft was explicitly copied for review."""
+        draft = self.current_draft
+        return bool(
+            self.state == WrenState.CLIPBOARD_WRITTEN
+            and draft
+            and self._prepared_draft_id == draft.id
+            and self._prepared_draft_hash == draft.text_sha256
+            and self._prepared_clipboard_hash == draft.text_sha256
+        )
+
+    def _invalidate_clipboard_preview(self) -> None:
+        self._prepared_draft_id = None
+        self._prepared_draft_hash = None
+        self._prepared_clipboard_hash = None
 
     def set_mode(self, mode: str) -> str:
         """Set operation mode: 'elevate' | 'agent' | 'brainstorm'."""
@@ -67,6 +87,7 @@ class WrenController:
         Record the currently focused target window BEFORE recording,
         then begin microphone capture.
         """
+        self._invalidate_clipboard_preview()
         try:
             self.active_target = self.targets.get_active_target()
         except Exception:
@@ -120,6 +141,7 @@ class WrenController:
         if not self.current_draft:
             raise ValueError("No active draft to revise")
 
+        self._invalidate_clipboard_preview()
         self.state_machine.transition(WrenState.PROCESSING)
         utterance = self.buffer.record_utterance(raw_text=instruction)
 
@@ -145,7 +167,10 @@ class WrenController:
 
     def revert_to_raw(self) -> Draft | None:
         """Revert draft directly to the raw text of the initial utterance."""
+        self._invalidate_clipboard_preview()
         draft = self.buffer.revert_to_raw()
+        if draft and self.state == WrenState.CLIPBOARD_WRITTEN:
+            self.state_machine.transition(WrenState.DRAFT_READY)
         if draft:
             self._last_diff = self.elevator.compute_diff(
                 self.buffer.utterances[draft.utterance_ids[0]].raw_text,
@@ -161,19 +186,52 @@ class WrenController:
         if not self.current_draft:
             raise ValueError("No active draft to copy")
 
-        self.state_machine.transition(WrenState.COPY_APPROVED)
-        written_hash = self.clipboard.write(self.current_draft.text)
-        self.state_machine.transition(WrenState.CLIPBOARD_WRITTEN)
+        draft = self.current_draft
+        if self.state not in {WrenState.IDLE, WrenState.DRAFT_READY, WrenState.CLIPBOARD_WRITTEN}:
+            raise ValueError("Wait until dictation or draft processing is complete before copying")
+
+        self._invalidate_clipboard_preview()
+        if self.state != WrenState.CLIPBOARD_WRITTEN:
+            self.state_machine.transition(WrenState.COPY_APPROVED)
+        try:
+            written_hash = self.clipboard.write(draft.text)
+            if written_hash != draft.text_sha256:
+                raise ValueError("Clipboard verification did not match the current draft")
+        except Exception:
+            if self.state == WrenState.COPY_APPROVED:
+                self.state_machine.transition(WrenState.IDLE)
+            raise
+
+        self._prepared_draft_id = draft.id
+        self._prepared_draft_hash = draft.text_sha256
+        self._prepared_clipboard_hash = written_hash
+        if self.state == WrenState.COPY_APPROVED:
+            self.state_machine.transition(WrenState.CLIPBOARD_WRITTEN)
         return written_hash
 
     def paste_current_draft(self) -> Receipt:
         """
-        Verify target window matches what was captured when listening started,
-        write to clipboard if not already written, execute paste shortcut,
-        record verified receipt, and safely return to IDLE.
+        Paste only the exact current draft that was explicitly copied for review.
+        Recheck the OS clipboard and target before executing the paste shortcut.
         """
-        if not self.current_draft:
+        draft = self.current_draft
+        if not draft:
             raise ValueError("No active draft to paste")
+        if not self.clipboard_preview_ready:
+            raise ValueError("Copy the current draft for review before pasting")
+
+        try:
+            current_clipboard_hash = self.clipboard.snapshot().content_hash
+        except Exception as exc:
+            self._invalidate_clipboard_preview()
+            self.state_machine.transition(WrenState.IDLE)
+            raise ValueError("Could not verify the reviewed clipboard; copy the draft again") from exc
+
+        if current_clipboard_hash != draft.text_sha256:
+            self._invalidate_clipboard_preview()
+            self.state_machine.transition(WrenState.IDLE)
+            raise ValueError("Clipboard changed after review; copy the current draft again before pasting")
+
         if not self.active_target:
             self.active_target = self.targets.get_active_target()
 
@@ -190,11 +248,8 @@ class WrenController:
             action="paste",
             target_hash=self.active_target.target_hash,
             ttl_seconds=120.0,
+            approved_by="click",
         )
-
-        # Write to clipboard if not yet written
-        if self.state != WrenState.CLIPBOARD_WRITTEN:
-            self.copy_current_draft()
 
         # Consume approval
         self.buffer.consume_approval(approval.id, current_target_hash=self.active_target.target_hash)
@@ -222,6 +277,7 @@ class WrenController:
 
         self.state_machine.transition(WrenState.PASTED)
         self.state_machine.transition(WrenState.IDLE)
+        self._invalidate_clipboard_preview()
         return receipt
 
     def attach_file(self, file_path: str) -> dict:
@@ -245,3 +301,4 @@ class WrenController:
         """Cancel and reset state to IDLE."""
         self.audio.cancel()
         self.state_machine.cancel()
+        self._invalidate_clipboard_preview()

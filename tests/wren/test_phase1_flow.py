@@ -1,4 +1,5 @@
 """End-to-End integrated test for Wren Phase 1 Desktop Vertical Slice."""
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -69,16 +70,76 @@ def test_full_dictate_elevate_copy_paste_flow(mock_target):
             assert "3:00 PM" in rev_draft.text
 
         # 5. User says "copy"
-        with patch.object(controller.clipboard, "write", return_value="hash-rev2"):
+        current_draft = controller.current_draft
+        with patch.object(controller.clipboard, "write", return_value=current_draft.text_sha256):
             controller.copy_current_draft()
             assert controller.state == WrenState.CLIPBOARD_WRITTEN
+            assert controller.clipboard_preview_ready is True
 
         # 6. User says "paste into gedit"
         with patch.object(controller.targets, "paste_into_target", return_value={"status": "pasted"}), \
-             patch.object(controller.clipboard, "safe_restore", return_value=True):
+             patch.object(
+                 controller.clipboard,
+                 "snapshot",
+                 return_value=SimpleNamespace(content_hash=current_draft.text_sha256),
+             ):
             receipt = controller.paste_current_draft()
             assert receipt.outcome == "done"
             assert controller.state == WrenState.IDLE
+            assert controller.clipboard_preview_ready is False
+
+
+def test_new_dictation_invalidates_previous_clipboard_review(mock_target):
+    controller = WrenController(stt_provider="mock", model="auto")
+    draft = controller.buffer.create_draft_from_utterance(
+        controller.buffer.record_utterance("review this").id,
+        "Reviewed text.",
+    )
+    controller.state_machine.transition(WrenState.DRAFT_READY)
+
+    with patch.object(controller.clipboard, "write", return_value=draft.text_sha256):
+        controller.copy_current_draft()
+    assert controller.clipboard_preview_ready is True
+
+    with (
+        patch.object(controller.targets, "get_active_target", return_value=mock_target),
+        patch.object(
+            controller.clipboard,
+            "snapshot",
+            return_value=SimpleNamespace(content="", content_hash="prior"),
+        ),
+        patch.object(controller.audio, "start"),
+    ):
+        controller.start_listening()
+
+    assert controller.state == WrenState.LISTENING
+    assert controller.clipboard_preview_ready is False
+    with pytest.raises(ValueError, match="Copy the current draft for review"):
+        controller.paste_current_draft()
+
+
+def test_external_clipboard_change_blocks_paste(mock_target):
+    controller = WrenController(stt_provider="mock", model="auto")
+    draft = controller.buffer.create_draft_from_utterance(
+        controller.buffer.record_utterance("review this").id,
+        "Reviewed text.",
+    )
+    controller.active_target = mock_target
+    controller.state_machine.transition(WrenState.DRAFT_READY)
+    with patch.object(controller.clipboard, "write", return_value=draft.text_sha256):
+        controller.copy_current_draft()
+
+    with patch.object(
+        controller.clipboard,
+        "snapshot",
+        return_value=SimpleNamespace(content_hash="a different clipboard value"),
+    ), patch.object(controller.targets, "paste_into_target") as paste_into_target:
+        with pytest.raises(ValueError, match="Clipboard changed after review"):
+            controller.paste_current_draft()
+
+    paste_into_target.assert_not_called()
+    assert controller.state == WrenState.IDLE
+    assert controller.clipboard_preview_ready is False
 
 
 def test_target_hijack_aborts_paste(mock_target):
@@ -87,10 +148,12 @@ def test_target_hijack_aborts_paste(mock_target):
     
     # Create draft
     u = controller.buffer.record_utterance("some text")
-    controller.buffer.create_draft_from_utterance(u.id, "some text")
+    draft = controller.buffer.create_draft_from_utterance(u.id, "some text")
     controller.state_machine.transition(WrenState.LISTENING)
     controller.state_machine.transition(WrenState.PROCESSING)
     controller.state_machine.transition(WrenState.DRAFT_READY)
+    with patch.object(controller.clipboard, "write", return_value=draft.text_sha256):
+        controller.copy_current_draft()
     
     # Switched target
     hijacked_target = TargetWindow(
@@ -102,6 +165,13 @@ def test_target_hijack_aborts_paste(mock_target):
         is_terminal=False,
     )
     
-    with patch.object(controller.targets, "get_active_target", return_value=hijacked_target):
+    with (
+        patch.object(
+            controller.clipboard,
+            "snapshot",
+            return_value=SimpleNamespace(content_hash=draft.text_sha256),
+        ),
+        patch.object(controller.targets, "get_active_target", return_value=hijacked_target),
+    ):
         with pytest.raises(Exception, match="Active window changed|Target mismatch"):
             controller.paste_current_draft()
