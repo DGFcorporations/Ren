@@ -14,7 +14,7 @@ import java.util.concurrent.TimeUnit
 
 class WrenApiClient(
     private var baseUrl: String = "http://192.168.4.28:8765",
-    private var authToken: String = "wren-pilot-auth-2026-dgf"
+    private var authToken: String = ""
 ) {
 
     private val client = OkHttpClient.Builder()
@@ -123,11 +123,10 @@ class WrenApiClient(
 
     /**
      * Connect to the workstation WebSocket endpoint (/ws/connect)
-     * for real-time draft synchronization and audio streaming.
+     * for state and draft synchronization. Microphone audio is not streamed here.
      */
     fun connectWebSocket(listener: WebSocketListener): WebSocket {
-        val tokenParam = if (authToken.isNotBlank()) "?token=$authToken" else ""
-        val wsUrl = baseUrl.replace("http://", "ws://").replace("https://", "wss://") + "/ws/connect" + tokenParam
+        val wsUrl = baseUrl.replace("http://", "ws://").replace("https://", "wss://") + "/ws/connect"
         val request = Request.Builder().url(wsUrl).build()
         return client.newWebSocket(request, listener)
     }

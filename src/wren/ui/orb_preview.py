@@ -3,8 +3,6 @@
 import json
 import os
 import secrets
-import socket
-import subprocess
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -12,8 +10,6 @@ from pydantic import BaseModel
 
 from wren.core.controller import WrenController
 from wren.files.ingest import FileIngestError
-
-DEFAULT_WREN_TOKEN = "wren-pilot-auth-2026-dgf"
 
 
 def is_loopback_client(client_host: str | None, request_host: str | None) -> bool:
@@ -32,15 +28,12 @@ def is_loopback_client(client_host: str | None, request_host: str | None) -> boo
 
 
 def extract_token_from_request(request: Request) -> str | None:
-    """Extract auth token from Authorization header, X-Wren-Token, or query parameter."""
+    """Extract auth token from an Authorization or X-Wren-Token header."""
     auth_hdr = request.headers.get("authorization", "")
     if auth_hdr.startswith("Bearer "):
         return auth_hdr[7:].strip()
     if "x-wren-token" in request.headers:
         return request.headers["x-wren-token"].strip()
-    token_param = request.query_params.get("token")
-    if token_param:
-        return token_param.strip()
     return None
 
 
@@ -60,31 +53,6 @@ class ModeRequest(BaseModel):
     mode: str
 
 
-def get_network_ips() -> dict[str, str]:
-    """Detect local LAN IP and Tailscale IP for mobile companion connection."""
-    lan_ip = "192.168.4.28"
-    tailscale_ip = "100.90.174.74"
-
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        detected_lan = s.getsockname()[0]
-        s.close()
-        if detected_lan and not detected_lan.startswith("127."):
-            lan_ip = detected_lan
-    except Exception:
-        pass
-
-    try:
-        res = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=1)
-        if res.returncode == 0 and res.stdout.strip():
-            tailscale_ip = res.stdout.strip().split()[0]
-    except Exception:
-        pass
-
-    return {"lan_ip": lan_ip, "tailscale_ip": tailscale_ip}
-
-
 def create_app(
     controller: WrenController | None = None,
     auth_token: str | None = None,
@@ -92,7 +60,7 @@ def create_app(
     if controller is None:
         controller = WrenController()
 
-    active_auth_token = auth_token or os.environ.get("WREN_AUTH_TOKEN", DEFAULT_WREN_TOKEN)
+    active_auth_token = auth_token if auth_token is not None else os.environ.get("WREN_AUTH_TOKEN", "")
 
     app = FastAPI(title="Wren Assistant")
 
@@ -103,7 +71,7 @@ def create_app(
 
         if not is_loopback_client(client_host, request_host):
             token = extract_token_from_request(request)
-            if not token or not secrets.compare_digest(token, active_auth_token):
+            if not active_auth_token or not token or not secrets.compare_digest(token, active_auth_token):
                 return JSONResponse(
                     status_code=401,
                     content={"detail": "Unauthorized: valid bearer token required for non-loopback access"},
@@ -519,10 +487,13 @@ def create_app(
       <span class="revision-pill" id="rev-pill">v0</span>
     </div>
     <div class="draft-box" id="draft-box">Speak or brainstorm to generate a draft.</div>
+    <div id="clipboard-review-status" role="status" aria-live="polite"
+      style="font-size:0.72rem; color:var(--text-muted);">Copy the draft for review before pasting.</div>
     <div class="diff-box" id="diff-box"></div>
     <div class="action-row">
-      <button class="btn btn-success" id="btn-paste" onclick="pasteDraft()" disabled>🎯 Paste</button>
-      <button class="btn" id="btn-copy" onclick="copyDraft()" disabled>📋 Copy</button>
+      <button class="btn" id="btn-copy" onclick="copyDraft()" disabled>📋 Copy for review</button>
+      <button class="btn btn-success" id="btn-paste" onclick="pasteDraft()"
+        disabled>🎯 Paste reviewed</button>
       <button class="btn" id="btn-revert" onclick="revertDraft()" disabled>🔄 Revert</button>
     </div>
     <div class="revise-row">
@@ -557,35 +528,21 @@ def create_app(
     </div>
     <div class="collapsible-body" id="connect-body">
       <div class="connect-card">
-        <div class="connect-item"><span>LAN IP:</span>
-          <span class="connect-val" id="lan-ip">192.168.4.28:8765</span></div>
-        <div class="connect-item"><span>Tailscale IP:</span>
-          <span class="connect-val" id="tailscale-ip">100.90.174.74:8765</span></div>
-        <div class="connect-item"><span>WebSocket:</span><span class="connect-val">ws://.../ws/connect</span></div>
+        <div class="connect-item"><span>LAN:</span>
+          <span class="connect-val" id="lan-ip">Remote pairing not enabled</span></div>
+        <div class="connect-item"><span>Tailscale:</span>
+          <span class="connect-val" id="tailscale-ip">Not configured</span></div>
+        <div class="connect-item"><span>WebSocket:</span><span class="connect-val">Local-only</span></div>
       </div>
     </div>
   </div>
 </div>
 
 <script>
-const urlParams = new URLSearchParams(window.location.search);
-const authToken = urlParams.get('token') || '';
-
-if (authToken) {
-  const originalFetch = window.fetch;
-  window.fetch = function(url, options = {}) {
-    const opts = { ...options };
-    opts.headers = new Headers(opts.headers || {});
-    if (!opts.headers.has('Authorization')) {
-      opts.headers.set('Authorization', `Bearer ${authToken}`);
-    }
-    return originalFetch(url, opts);
-  };
-}
-
 let currentState = "IDLE";
 let currentMode = "elevate";
 let isListening = false;
+let clipboardStatusMessage = "";
 
 function toggleTray(id) {
   const el = document.getElementById(id);
@@ -649,19 +606,29 @@ async function stopListening() {
 
 async function pasteDraft() {
   try {
-    await fetch('/api/paste', { method: 'POST' });
+    const res = await fetch('/api/paste', { method: 'POST' });
+    const data = await res.json();
+    const fallback = 'Paste was blocked. Copy and review the current draft first.';
+    clipboardStatusMessage = res.ok ? 'Paste completed.' : (data.detail || fallback);
     fetchStatus();
   } catch (err) {
     console.error("Error pasting", err);
+    clipboardStatusMessage = 'Paste could not be verified. Review the current draft and try again.';
+    fetchStatus();
   }
 }
 
 async function copyDraft() {
   try {
-    await fetch('/api/copy', { method: 'POST' });
+    const res = await fetch('/api/copy', { method: 'POST' });
+    const data = await res.json();
+    const copied = 'Copied. Review the draft above; Paste reviewed will recheck the clipboard.';
+    clipboardStatusMessage = res.ok ? copied : (data.detail || 'Copy failed.');
     fetchStatus();
   } catch (err) {
     console.error("Error copying", err);
+    clipboardStatusMessage = 'Copy failed; no paste is enabled.';
+    fetchStatus();
   }
 }
 
@@ -764,18 +731,32 @@ async function fetchStatus() {
     const btnPaste = document.getElementById('btn-paste');
     const btnCopy = document.getElementById('btn-copy');
     const btnRevert = document.getElementById('btn-revert');
+    const reviewStatus = document.getElementById('clipboard-review-status');
+    const canCopy = ['IDLE', 'DRAFT_READY', 'CLIPBOARD_WRITTEN'].includes(data.state);
 
     if (data.current_draft) {
       draftBox.innerText = data.current_draft.text;
       document.getElementById('rev-pill').innerText = 'v' + data.current_draft.revision;
-      btnPaste.disabled = false;
-      btnCopy.disabled = false;
-      btnRevert.disabled = false;
+      btnPaste.disabled = !(data.state === 'CLIPBOARD_WRITTEN' && data.clipboard_preview_ready);
+      btnCopy.disabled = !canCopy;
+      btnRevert.disabled = !canCopy;
     } else {
       draftBox.innerText = 'Speak or brainstorm to generate a draft.';
       btnPaste.disabled = true;
       btnCopy.disabled = true;
       btnRevert.disabled = true;
+    }
+
+    if (clipboardStatusMessage) {
+      reviewStatus.innerText = clipboardStatusMessage;
+      clipboardStatusMessage = '';
+    } else if (data.state === 'LISTENING' || data.state === 'PROCESSING') {
+      reviewStatus.innerText = 'A new dictation or revision is in progress; ' +
+        'the previous draft cannot be pasted.';
+    } else if (data.clipboard_preview_ready) {
+      reviewStatus.innerText = 'Copied and verified. Review the draft above, then choose Paste reviewed.';
+    } else {
+      reviewStatus.innerText = 'Copy the current draft for review before pasting.';
     }
 
     if (data.last_diff) {
@@ -825,13 +806,14 @@ fetchConnect();
 
     @app.get("/api/connect")
     def get_connect_info():
-        ips = get_network_ips()
         return {
             "status": "ready",
             "state": controller.state.value,
             "mode": controller.mode,
-            "lan_ip": ips["lan_ip"],
-            "tailscale_ip": ips["tailscale_ip"],
+            "lan_ip": None,
+            "tailscale_ip": None,
+            "remote_access_ready": False,
+            "connection_note": "Remote pairing is not configured; the CLI binds to loopback by default.",
             "port": 8765,
             "auth_required": True,
             "endpoints": {
@@ -878,6 +860,7 @@ fetchConnect();
             "mode": controller.mode,
             "is_recording": controller.audio.is_recording,
             "current_draft": draft_dict,
+            "clipboard_preview_ready": controller.clipboard_preview_ready,
             "last_diff": controller.last_diff,
             "active_target": target_dict,
         }
@@ -1006,12 +989,12 @@ fetchConnect();
         request_host = websocket.url.hostname
 
         if not is_loopback_client(client_host, request_host):
-            token = websocket.query_params.get("token") or websocket.headers.get("x-wren-token")
+            token = websocket.headers.get("x-wren-token")
             auth_hdr = websocket.headers.get("authorization", "")
             if auth_hdr.startswith("Bearer "):
                 token = auth_hdr[7:].strip()
 
-            if not token or not secrets.compare_digest(token, active_auth_token):
+            if not active_auth_token or not token or not secrets.compare_digest(token, active_auth_token):
                 await websocket.close(
                     code=1008,
                     reason="Unauthorized: valid token required for non-loopback access",
