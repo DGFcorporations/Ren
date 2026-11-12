@@ -3,6 +3,9 @@ name: Ren Android APK
 on:
   workflow_dispatch:
   push:
+    branches:
+      - pilot/voice-memory-browser
+      - main
     paths:
       - "android/**"
       - ".github/workflows/android-apk.yml"
@@ -16,12 +19,11 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
-      - name: Accept SDK licenses
-        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
       - name: Build debug APK
         working-directory: android
-        run: chmod +x gradlew && ./gradlew assembleDebug --no-daemon --stacktrace
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
       - uses: actions/upload-artifact@v4
         with:
           name: ren-android
