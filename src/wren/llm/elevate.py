@@ -47,6 +47,13 @@ Be sharp, insightful, and concise:
 Keep it punchy, conversational, and grounded in DGF standards.
 """
 
+SYSTEM_TALK_PROMPT = """You are Ren, the local workstation companion speaking through the floating orb.
+Reply in plain spoken sentences the user can hear. No markdown fences.
+Stay under 80 words unless the user asked for code or a list.
+Never claim you pasted, clicked, or saved a file. Those actions wait for a separate confirmation.
+Use the screen note only as context. Do not dump it back unless asked.
+"""
+
 
 @dataclass
 class ElevationResult:
@@ -184,4 +191,48 @@ class PromptElevator:
             model="local-deterministic-fallback",
             fallback_used=True,
             mode=mode,
+        )
+
+    def converse(
+        self,
+        user_text: str,
+        screen_note: str = "",
+        history: list[dict] | None = None,
+    ) -> ElevationResult:
+        """Live orb reply. Falls back to a local sentence if no model is up."""
+        messages: list[dict] = [{"role": "system", "content": SYSTEM_TALK_PROMPT}]
+        if screen_note:
+            messages.append({"role": "system", "content": f"SCREEN NOTE:\n{screen_note[:1500]}"})
+        for turn in (history or [])[-8:]:
+            role = turn.get("role")
+            content = turn.get("content")
+            if role in {"user", "assistant"} and content:
+                messages.append({"role": role, "content": str(content)[:2000]})
+        messages.append({"role": "user", "content": user_text})
+        payload = {"model": self.model, "messages": messages, "temperature": 0.4}
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                res = client.post(f"{self.base_url}/chat/completions", json=payload)
+                if res.status_code == 200:
+                    reply = res.json()["choices"][0]["message"]["content"].strip()
+                    return ElevationResult(
+                        raw_text=user_text,
+                        elevated_text=reply,
+                        diff="",
+                        intent_preserved=True,
+                        model=self.model,
+                        fallback_used=False,
+                        mode="talk",
+                    )
+        except Exception:
+            pass
+        reply = f"I heard you. The workstation model is offline, so here is the local reply: {user_text.strip()}"
+        return ElevationResult(
+            raw_text=user_text,
+            elevated_text=reply,
+            diff="",
+            intent_preserved=True,
+            model="local-deterministic-fallback",
+            fallback_used=True,
+            mode="talk",
         )

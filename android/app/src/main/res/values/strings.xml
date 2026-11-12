@@ -1,4 +1,4 @@
 <resources>
-    <string name="app_name">Wren Assistant</string>
-    <string name="accessibility_service_description">Wren Accessibility Service provides screen reading and focus-locked paste injection across apps.</string>
+    <string name="app_name">Ren</string>
+    <string name="accessibility_service_description">Ren reads the screen you are on and pastes only after you confirm the clipboard preview.</string>
 </resources>

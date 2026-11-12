@@ -24,8 +24,10 @@ import kotlinx.coroutines.launch
 class MainActivity : AppCompatActivity() {
 
     private val PERM_REQ_AUDIO = 1001
+    private val PERM_REQ_NOTIF = 1002
     private val PREFS_NAME = "wren_prefs"
     private val PREF_HOST = "host_url"
+    private val PREF_TOKEN = "auth_token"
     private val PREF_MODE = "active_mode"
 
     private lateinit var apiClient: WrenApiClient
@@ -35,13 +37,15 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val savedHost = prefs.getString(PREF_HOST, "http://192.168.4.28:8765") ?: "http://192.168.4.28:8765"
-        val savedMode = prefs.getString(PREF_MODE, "elevate") ?: "elevate"
+        val savedHost = prefs.getString(PREF_HOST, WrenApiClient.DEFAULT_HOST) ?: WrenApiClient.DEFAULT_HOST
+        val savedToken = prefs.getString(PREF_TOKEN, WrenApiClient.DEFAULT_TOKEN) ?: WrenApiClient.DEFAULT_TOKEN
 
-        apiClient = WrenApiClient(savedHost)
+        apiClient = WrenApiClient(savedHost, savedToken)
 
         val editHost = findViewById<EditText>(R.id.edit_host)
+        val editToken = findViewById<EditText>(R.id.edit_token)
         editHost.setText(savedHost)
+        editToken.setText(savedToken)
 
         val btnLan = findViewById<Button>(R.id.btn_preset_lan)
         val btnTailscale = findViewById<Button>(R.id.btn_preset_tailscale)
@@ -54,27 +58,32 @@ class MainActivity : AppCompatActivity() {
         val btnMic = findViewById<Button>(R.id.btn_mic)
         val btnStartOrb = findViewById<Button>(R.id.btn_start_orb)
 
+        fun rememberConnection() {
+            val host = editHost.text.toString().trim()
+            val token = editToken.text.toString().trim().ifBlank { WrenApiClient.DEFAULT_TOKEN }
+            prefs.edit().putString(PREF_HOST, host).putString(PREF_TOKEN, token).apply()
+            apiClient.updateBaseUrl(host)
+            apiClient.setAuthToken(token)
+        }
+
         btnLan.setOnClickListener {
-            val url = "http://192.168.4.28:8765"
+            val url = WrenApiClient.DEFAULT_HOST
             editHost.setText(url)
-            prefs.edit().putString(PREF_HOST, url).apply()
-            apiClient.updateBaseUrl(url)
+            rememberConnection()
             Toast.makeText(this, "Set to LAN: $url", Toast.LENGTH_SHORT).show()
         }
 
         btnTailscale.setOnClickListener {
             val url = "http://100.90.174.74:8765"
             editHost.setText(url)
-            prefs.edit().putString(PREF_HOST, url).apply()
-            apiClient.updateBaseUrl(url)
+            rememberConnection()
             Toast.makeText(this, "Set to Tailscale: $url", Toast.LENGTH_SHORT).show()
         }
 
         fun handleSetMode(mode: String) {
             prefs.edit().putString(PREF_MODE, mode).apply()
+            rememberConnection()
             lifecycleScope.launch {
-                val host = editHost.text.toString().trim()
-                apiClient.updateBaseUrl(host)
                 val res = apiClient.setMode(mode)
                 if (res.isSuccess) {
                     Toast.makeText(this@MainActivity, "Active Mode: $mode", Toast.LENGTH_SHORT).show()
@@ -103,12 +112,19 @@ class MainActivity : AppCompatActivity() {
         btnA11y.setOnClickListener {
             val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
             startActivity(intent)
-            Toast.makeText(this, "Enable 'Wren Assistant' in Accessibility Settings", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Enable Ren in Accessibility settings", Toast.LENGTH_LONG).show()
         }
 
         btnMic.setOnClickListener {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), PERM_REQ_AUDIO)
+            val needs = mutableListOf(Manifest.permission.RECORD_AUDIO)
+            if (Build.VERSION.SDK_INT >= 33) {
+                needs.add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            val missing = needs.filter {
+                ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+            }
+            if (missing.isNotEmpty()) {
+                ActivityCompat.requestPermissions(this, missing.toTypedArray(), PERM_REQ_AUDIO)
             } else {
                 Toast.makeText(this, "Microphone permission already granted!", Toast.LENGTH_SHORT).show()
             }
@@ -119,14 +135,25 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "Please grant Overlay permission first!", Toast.LENGTH_LONG).show()
                 return@setOnClickListener
             }
+            if (Build.VERSION.SDK_INT >= 33 &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            ) {
+                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), PERM_REQ_NOTIF)
+            }
+            rememberConnection()
             val host = editHost.text.toString().trim()
-            prefs.edit().putString(PREF_HOST, host).apply()
+            val token = editToken.text.toString().trim().ifBlank { WrenApiClient.DEFAULT_TOKEN }
 
             val intent = Intent(this, FloatingOrbService::class.java).apply {
                 putExtra("host_url", host)
+                putExtra("auth_token", token)
             }
-            startService(intent)
-            Toast.makeText(this, "Floating Wren Orb Started!", Toast.LENGTH_SHORT).show()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+            Toast.makeText(this, "Ren orb is on. Tap it to dictate.", Toast.LENGTH_SHORT).show()
         }
     }
 

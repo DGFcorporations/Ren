@@ -60,6 +60,43 @@ class ModeRequest(BaseModel):
     mode: str
 
 
+class DictateRequest(BaseModel):
+    text: str
+    source: str = "android"
+
+
+class ConverseRequest(BaseModel):
+    text: str
+
+
+class PhoneScreenRequest(BaseModel):
+    package: str = ""
+    text: str = ""
+
+
+class BrowserActRequest(BaseModel):
+    op: str
+    url: str | None = None
+    selector: str | None = None
+    text: str | None = None
+    x: float | None = None
+    y: float | None = None
+    delta_y: float | None = None
+    confirm: bool = False
+    approval_id: str | None = None
+
+
+class WorkspaceWriteRequest(BaseModel):
+    path: str
+    content: str = ""
+    confirm: bool = False
+    approval_id: str | None = None
+
+
+class WorkspaceReadRequest(BaseModel):
+    path: str
+
+
 def get_network_ips() -> dict[str, str]:
     """Detect local LAN IP and Tailscale IP for mobile companion connection."""
     lan_ip = "192.168.4.28"
@@ -842,6 +879,13 @@ fetchConnect();
                 "listen_stop": "/api/listen/stop",
                 "screen_active": "/api/screen/active",
                 "files_search": "/api/files/search",
+                "dictate": "/api/dictate",
+                "converse": "/api/converse",
+                "paste_preview": "/api/paste/preview",
+                "screen_phone": "/api/screen/phone",
+                "browser": "/api/browser/act",
+                "workspace": "/api/workspace/list",
+                "mcp": "stdio ren-mcp",
             },
         }
 
@@ -880,6 +924,11 @@ fetchConnect();
             "current_draft": draft_dict,
             "last_diff": controller.last_diff,
             "active_target": target_dict,
+            "last_reply": controller.last_reply,
+            "phone_screen": {
+                "package": controller.phone_screen.get("package", ""),
+                "chars": len(controller.phone_screen.get("text") or ""),
+            },
         }
 
     @app.post("/api/listen/start")
@@ -999,6 +1048,81 @@ fetchConnect();
             "timestamp": ctx.timestamp,
         }
 
+    @app.get("/api/screen/phone")
+    def get_phone_screen():
+        return controller.phone_screen
+
+    @app.post("/api/screen/phone")
+    def post_phone_screen(req: PhoneScreenRequest):
+        return controller.note_phone_screen(req.package, req.text)
+
+    @app.post("/api/dictate")
+    def dictate(req: DictateRequest):
+        try:
+            draft = controller.accept_dictation(req.text, source=req.source)
+            return {
+                "type": "paste_preview",
+                "requires_confirm": True,
+                "raw": req.text,
+                "status": "draft_ready",
+                "revision": draft.revision,
+                "text": draft.text,
+            }
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    @app.post("/api/converse")
+    def converse(req: ConverseRequest):
+        try:
+            reply = controller.converse(req.text)
+            return {"type": "assistant_message", "text": reply, "requires_confirm": True}
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    @app.get("/api/paste/preview")
+    def paste_preview():
+        return controller.paste_preview()
+
+    @app.post("/api/browser/act")
+    def browser_act(req: BrowserActRequest):
+        try:
+            return controller.browser.act(
+                req.op,
+                confirm=req.confirm,
+                approval_id=req.approval_id,
+                url=req.url,
+                selector=req.selector,
+                text=req.text,
+                x=req.x,
+                y=req.y,
+                delta_y=req.delta_y,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    @app.get("/api/workspace/list")
+    def workspace_list(path: str = "."):
+        try:
+            return controller.workspace.list_dir(path)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    @app.post("/api/workspace/read")
+    def workspace_read(req: WorkspaceReadRequest):
+        try:
+            return controller.workspace.read(req.path)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    @app.post("/api/workspace/write")
+    def workspace_write(req: WorkspaceWriteRequest):
+        try:
+            if req.approval_id:
+                return controller.workspace.commit_write(req.approval_id)
+            return controller.workspace.write(req.path, req.content, confirm=req.confirm)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
     @app.websocket("/ws/connect")
     async def websocket_connect(websocket: WebSocket):
         """Bidirectional WebSocket for mobile companion streaming and real-time synchronization."""
@@ -1058,6 +1182,12 @@ fetchConnect();
                             "revision": draft.revision,
                         },
                     })
+                    await websocket.send_json({
+                        "type": "paste_preview",
+                        "requires_confirm": True,
+                        "raw": draft.text,
+                        "draft": {"id": draft.id, "text": draft.text, "revision": draft.revision},
+                    })
 
                 elif action == "elevate_text":
                     raw = msg.get("text", "")
@@ -1082,6 +1212,37 @@ fetchConnect();
                         "outcome": receipt.outcome,
                         "evidence": receipt.evidence,
                     })
+
+                elif action == "dictate":
+                    if msg.get("screen"):
+                        controller.note_phone_screen(msg.get("package", ""), msg.get("screen", ""))
+                    draft = controller.accept_dictation(msg.get("text", ""), source=msg.get("source", "android"))
+                    await websocket.send_json({
+                        "type": "paste_preview",
+                        "requires_confirm": True,
+                        "raw": msg.get("text", ""),
+                        "draft": {"id": draft.id, "text": draft.text, "revision": draft.revision},
+                    })
+
+                elif action == "screen_context":
+                    stored = controller.note_phone_screen(msg.get("package", ""), msg.get("text", ""))
+                    await websocket.send_json(stored)
+
+                elif action == "converse":
+                    if msg.get("screen"):
+                        controller.note_phone_screen(msg.get("package", ""), msg.get("screen", ""))
+                    reply = controller.converse(msg.get("text", ""))
+                    await websocket.send_json({
+                        "type": "assistant_message",
+                        "text": reply,
+                        "requires_confirm": True,
+                    })
+
+                elif action == "request_screen":
+                    await websocket.send_json({"type": "screen_request"})
+
+                else:
+                    await websocket.send_json({"type": "error", "message": f"Unknown action {action}"})
 
         except WebSocketDisconnect:
             pass

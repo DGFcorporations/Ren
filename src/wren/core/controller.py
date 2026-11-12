@@ -1,6 +1,10 @@
 """Wren Controller: Authoritative coordinator of voice, elevation, buffer, clipboard, and target paste."""
 
+import time
+
 from wren.audio.capture import DesktopAudioCapture
+from wren.browser.session import BrowserController
+from wren.bridge.workspace import WorkspaceWriter
 from wren.clipboard.factory import get_clipboard_manager
 from wren.clipboard.x11 import ClipSnapshot
 from wren.core.buffer import Draft, DraftBuffer, Receipt
@@ -32,6 +36,11 @@ class WrenController:
         self.file_ingest = UnifiedFileIngest()
         self.attached_files: list[dict] = []
         self.mode: str = "elevate"
+        self.phone_screen: dict = {"package": "", "text": "", "at": 0.0}
+        self.conversation: list[dict] = []
+        self.last_reply: str = ""
+        self.browser = BrowserController()
+        self.workspace = WorkspaceWriter()
         
         if stt_provider == "mock":
             self.stt: BaseSTT = MockSTT()
@@ -240,6 +249,78 @@ class WrenController:
     def get_screen_context(self, capture_screenshot: bool = False) -> ScreenContext:
         """Inspect active screen/window interface context."""
         return self.screen_inspector.get_active_screen_context(capture_screenshot=capture_screenshot)
+
+    def _enter_processing(self) -> None:
+        if self.state == WrenState.PROCESSING:
+            return
+        if self.state == WrenState.LISTENING:
+            self.audio.cancel()
+            self.state_machine.transition(WrenState.PROCESSING)
+            return
+        if self.state not in (WrenState.IDLE, WrenState.DRAFT_READY):
+            self.state_machine.cancel()
+        self.state_machine.transition(WrenState.PROCESSING)
+
+    def _draft_payload(self, draft: Draft, raw: str) -> dict:
+        return {
+            "type": "paste_preview",
+            "requires_confirm": True,
+            "raw": raw,
+            "draft": {"id": draft.id, "text": draft.text, "revision": draft.revision},
+        }
+
+    def note_phone_screen(self, package: str, text: str) -> dict:
+        self.phone_screen = {
+            "package": (package or "")[:200],
+            "text": (text or "")[:20000],
+            "at": time.time(),
+        }
+        return {"type": "screen_stored", "chars": len(self.phone_screen["text"]), "package": self.phone_screen["package"]}
+
+    def accept_dictation(self, text: str, source: str = "android") -> Draft:
+        """Turn a finished dictation into a paste preview. Does not paste."""
+        cleaned = (text or "").strip()
+        if not cleaned:
+            raise ValueError("Empty dictation")
+        self._enter_processing()
+        provider = "android-speech" if source == "android" else "text"
+        utterance = self.buffer.record_utterance(raw_text=cleaned, source=source, stt_provider=provider)
+        # Dictation paste preview is the speaker's words, cleaned. Chat lives in converse().
+        elev_res = self.elevator.elevate(cleaned, mode="elevate")
+        self._last_diff = elev_res.diff
+        draft = self.buffer.create_draft_from_utterance(
+            utterance_id=utterance.id,
+            text=elev_res.elevated_text,
+            op="dictate",
+            model=elev_res.model,
+        )
+        draft.intent_flag = not elev_res.intent_preserved
+        self.state_machine.transition(WrenState.DRAFT_READY)
+        return draft
+
+    def converse(self, text: str) -> str:
+        """Live reply for the orb. Does not paste and does not rewrite the clipboard."""
+        cleaned = (text or "").strip()
+        if not cleaned:
+            raise ValueError("Empty message")
+        screen_note = self.phone_screen.get("text") or ""
+        result = self.elevator.converse(cleaned, screen_note=screen_note, history=self.conversation)
+        reply = result.elevated_text.strip()
+        self.conversation.append({"role": "user", "content": cleaned})
+        self.conversation.append({"role": "assistant", "content": reply})
+        self.conversation = self.conversation[-20:]
+        self.last_reply = reply
+        return reply
+
+    def paste_preview(self) -> dict:
+        draft = self.current_draft
+        if not draft:
+            return {"type": "paste_preview", "requires_confirm": True, "draft": None}
+        return {
+            "type": "paste_preview",
+            "requires_confirm": True,
+            "draft": {"id": draft.id, "text": draft.text, "revision": draft.revision},
+        }
 
     def cancel(self) -> None:
         """Cancel and reset state to IDLE."""

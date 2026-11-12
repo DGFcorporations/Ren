@@ -1,5 +1,7 @@
 # Workbench — G1 offline pilot
 
+**Phone and workstation agent:** see [Ren agent runbook](docs/REN_AGENT.md). That is the installable Android orb, the workstation process, dictation, confirmed paste, screen reading, browser pointer, and the MCP bridge.
+
 **Development branch:** `pilot/voice-memory-browser` in `DGFcorporations/Ren`.
 
 A self-contained, local rehearsal of an approval-gated memory-to-browser workflow.

@@ -13,7 +13,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Wren Companion"
+            android:text="Ren"
             android:textColor="#38BDF8"
             android:textSize="26sp"
             android:textStyle="bold" />
@@ -22,7 +22,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
-            android:text="Everyday Voice &amp; Screen Agent Bridge"
+            android:text="Voice, screen, and confirmed paste"
             android:textColor="#94A3B8"
             android:textSize="13sp" />
 
@@ -83,6 +83,28 @@
                 android:text="Tailscale (100.90.174.74)"
                 android:textSize="11sp" />
         </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="Shared token (must match the workstation):"
+            android:textColor="#94A3B8"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <EditText
+            android:id="@+id/edit_token"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:background="#121826"
+            android:hint="Bearer token"
+            android:inputType="textPassword"
+            android:padding="12dp"
+            android:textColor="#F8FAFC"
+            android:textColorHint="#64748B"
+            android:textSize="13sp" />
 
         <TextView
             android:layout_width="match_parent"

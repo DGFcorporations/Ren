@@ -6,16 +6,20 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 class WrenApiClient(
-    private var baseUrl: String = "http://192.168.4.28:8765",
-    private var authToken: String = "wren-pilot-auth-2026-dgf"
+    private var baseUrl: String = DEFAULT_HOST,
+    private var authToken: String = DEFAULT_TOKEN
 ) {
+
+    companion object {
+        const val DEFAULT_HOST = "http://192.168.4.28:8765"
+        const val DEFAULT_TOKEN = "wren-pilot-auth-2026-dgf"
+    }
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
@@ -44,12 +48,20 @@ class WrenApiClient(
 
     fun getAuthToken(): String = authToken
 
+    private fun execute(req: Request): String {
+        client.newCall(req).execute().use { resp ->
+            val body = resp.body?.string() ?: ""
+            if (!resp.isSuccessful) {
+                throw IllegalStateException("HTTP ${resp.code}: ${body.take(180)}")
+            }
+            return body.ifBlank { "{}" }
+        }
+    }
+
     suspend fun getConnectInfo(): Result<JSONObject> = withContext(Dispatchers.IO) {
         try {
             val req = Request.Builder().url("$baseUrl/api/connect").get().build()
-            val resp = client.newCall(req).execute()
-            val body = resp.body?.string() ?: "{}"
-            Result.success(JSONObject(body))
+            Result.success(JSONObject(execute(req)))
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -58,9 +70,7 @@ class WrenApiClient(
     suspend fun getStatus(): Result<JSONObject> = withContext(Dispatchers.IO) {
         try {
             val req = Request.Builder().url("$baseUrl/api/status").get().build()
-            val resp = client.newCall(req).execute()
-            val body = resp.body?.string() ?: "{}"
-            Result.success(JSONObject(body))
+            Result.success(JSONObject(execute(req)))
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -73,9 +83,7 @@ class WrenApiClient(
                 .url("$baseUrl/api/mode")
                 .post(payload.toRequestBody(jsonMedia))
                 .build()
-            val resp = client.newCall(req).execute()
-            val body = resp.body?.string() ?: "{}"
-            Result.success(body)
+            Result.success(execute(req))
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -84,9 +92,7 @@ class WrenApiClient(
     suspend fun searchFiles(query: String): Result<String> = withContext(Dispatchers.IO) {
         try {
             val req = Request.Builder().url("$baseUrl/api/files/search?q=$query").get().build()
-            val resp = client.newCall(req).execute()
-            val body = resp.body?.string() ?: "{}"
-            Result.success(body)
+            Result.success(execute(req))
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -99,9 +105,7 @@ class WrenApiClient(
                 .url("$baseUrl/api/files/read")
                 .post(payload.toRequestBody(jsonMedia))
                 .build()
-            val resp = client.newCall(req).execute()
-            val body = resp.body?.string() ?: "{}"
-            Result.success(body)
+            Result.success(execute(req))
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -114,8 +118,8 @@ class WrenApiClient(
                 .url("$baseUrl/api/files/attach")
                 .post(payload.toRequestBody(jsonMedia))
                 .build()
-            val resp = client.newCall(req).execute()
-            Result.success(resp.isSuccessful)
+            execute(req)
+            Result.success(true)
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -123,7 +127,7 @@ class WrenApiClient(
 
     /**
      * Connect to the workstation WebSocket endpoint (/ws/connect)
-     * for real-time draft synchronization and audio streaming.
+     * for dictation, conversation, and paste previews.
      */
     fun connectWebSocket(listener: WebSocketListener): WebSocket {
         val tokenParam = if (authToken.isNotBlank()) "?token=$authToken" else ""

@@ -71,7 +71,10 @@ class WrenAccessibilityService : AccessibilityService() {
 
     /**
      * Safely pastes or sets text into the currently focused input field.
+     * pasteText is the name the orb calls; both go through the same confirmed path.
      */
+    fun pasteText(text: String): Boolean = pasteTextIntoActive(text)
+
     fun pasteTextIntoActive(text: String): Boolean {
         val root = rootInActiveWindow ?: return false
         val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false

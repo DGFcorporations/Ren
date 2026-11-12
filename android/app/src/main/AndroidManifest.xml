@@ -7,11 +7,13 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="true"
         android:icon="@android:drawable/ic_btn_speak_now"
-        android:label="Wren Assistant"
+        android:label="Ren"
         android:roundIcon="@android:drawable/ic_btn_speak_now"
         android:supportsRtl="true"
         android:theme="@style/Theme.Wren"
@@ -41,7 +43,12 @@
         <service
             android:name=".service.FloatingOrbService"
             android:enabled="true"
-            android:exported="false" />
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Ren floating assistant orb for dictation, conversation, and confirmed paste" />
+        </service>
 
         <service
             android:name=".service.MicService"
