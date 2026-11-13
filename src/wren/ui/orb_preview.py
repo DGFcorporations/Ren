@@ -1,10 +1,13 @@
 """Wren Floating Orb & Draft Preview Web Server."""
 
+import hashlib
 import json
 import os
 import secrets
 import socket
+import stat
 import subprocess
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -13,7 +16,8 @@ from pydantic import BaseModel
 from wren.core.controller import WrenController
 from wren.files.ingest import FileIngestError
 
-DEFAULT_WREN_TOKEN = "wren-pilot-auth-2026-dgf"
+# SHA-256 of the old built-in token. The token itself is not stored here.
+RETIRED_TOKEN_SHA256 = "1843dd013bce8d1d9f0c9810a03895f67f0e718e016d2cfc81a2d28f8fbe1437"
 
 
 def is_loopback_client(client_host: str | None, request_host: str | None) -> bool:
@@ -97,10 +101,72 @@ class WorkspaceReadRequest(BaseModel):
     path: str
 
 
+def token_store_path() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "wren" / "auth-token"
+
+
+def _usable_token(candidate: str | None) -> str | None:
+    if candidate is None:
+        return None
+    value = candidate.strip()
+    if not value:
+        return None
+    digest = hashlib.sha256(value.encode()).hexdigest()
+    if digest == RETIRED_TOKEN_SHA256:
+        return None
+    return value
+
+
+def _write_token(path: Path, token: str) -> None:
+    if path.is_symlink():
+        path.unlink()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.chmod(0o700)
+    path.write_text(token + "\n", encoding="utf-8")
+    path.chmod(0o600)
+
+
+def resolve_auth_token(explicit: str | None = None, *, persist: bool = True) -> tuple[str, bool]:
+    """Return the bearer token for clients that are not on this computer.
+
+    A value passed in, then WREN_AUTH_TOKEN, then ~/.config/wren/auth-token.
+    The old built-in token is rejected. A new token is created only when nothing usable exists.
+    """
+    replaced = False
+    if explicit is not None:
+        chosen = _usable_token(explicit)
+        if chosen:
+            return chosen, False
+        if explicit.strip():
+            replaced = True
+    else:
+        env_token = os.environ.get("WREN_AUTH_TOKEN")
+        chosen = _usable_token(env_token)
+        if chosen:
+            return chosen, False
+        if env_token and env_token.strip():
+            replaced = True
+
+    path = token_store_path()
+    if path.is_file() and not path.is_symlink():
+        stored = _usable_token(path.read_text(encoding="utf-8"))
+        if stored:
+            mode = stat.S_IMODE(path.stat().st_mode)
+            if mode & 0o077:
+                path.chmod(0o600)
+            return stored, replaced
+
+    generated = secrets.token_urlsafe(32)
+    if persist:
+        _write_token(path, generated)
+    return generated, replaced
+
+
 def get_network_ips() -> dict[str, str]:
     """Detect local LAN IP and Tailscale IP for mobile companion connection."""
-    lan_ip = "192.168.4.28"
-    tailscale_ip = "100.90.174.74"
+    lan_ip = ""
+    tailscale_ip = ""
 
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -129,7 +195,7 @@ def create_app(
     if controller is None:
         controller = WrenController()
 
-    active_auth_token = auth_token or os.environ.get("WREN_AUTH_TOKEN", DEFAULT_WREN_TOKEN)
+    active_auth_token, _replaced = resolve_auth_token(auth_token, persist=False)
 
     app = FastAPI(title="Wren Assistant")
 
@@ -595,9 +661,9 @@ def create_app(
     <div class="collapsible-body" id="connect-body">
       <div class="connect-card">
         <div class="connect-item"><span>LAN IP:</span>
-          <span class="connect-val" id="lan-ip">192.168.4.28:8765</span></div>
+          <span class="connect-val" id="lan-ip">not detected</span></div>
         <div class="connect-item"><span>Tailscale IP:</span>
-          <span class="connect-val" id="tailscale-ip">100.90.174.74:8765</span></div>
+          <span class="connect-val" id="tailscale-ip">not detected</span></div>
         <div class="connect-item"><span>WebSocket:</span><span class="connect-val">ws://.../ws/connect</span></div>
       </div>
     </div>

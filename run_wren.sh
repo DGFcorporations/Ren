@@ -7,8 +7,7 @@ cd "$SCRIPT_DIR"
 
 echo "=== Launching Wren Everyday Assistant ==="
 
-# Auth token for non-loopback clients (defaults to built-in pilot token)
-export WREN_AUTH_TOKEN="${WREN_AUTH_TOKEN:-wren-pilot-auth-2026-dgf}"
+# Token comes from WREN_AUTH_TOKEN or ~/.config/wren/auth-token. There is no built-in password.
 
 # Check virtualenv
 if [ -f ".venv/bin/python" ]; then

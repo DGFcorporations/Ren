@@ -1,13 +1,12 @@
 """Wren command-line launcher and desktop server runner."""
 import argparse
-import os
 import threading
 import time
 
 import uvicorn
 
 from wren.core.controller import WrenController
-from wren.ui.orb_preview import DEFAULT_WREN_TOKEN, create_app
+from wren.ui.orb_preview import create_app, get_network_ips, resolve_auth_token
 
 
 def main():
@@ -16,8 +15,8 @@ def main():
     parser.add_argument("--port", type=int, default=8765, help="Port (default: 8765)")
     parser.add_argument(
         "--token",
-        default=os.environ.get("WREN_AUTH_TOKEN", DEFAULT_WREN_TOKEN),
-        help="Shared bearer token for non-loopback clients (default: WREN_AUTH_TOKEN or built-in token)",
+        default=None,
+        help="Bearer token for clients that are not on this computer (default: WREN_AUTH_TOKEN, then ~/.config/wren/auth-token)",
     )
     parser.add_argument("--model", default="auto", help="FreeLLMAPI model (default: auto)")
     parser.add_argument(
@@ -32,17 +31,28 @@ def main():
         help="Launch as native floating desktop window",
     )
     args = parser.parse_args()
+    token, retired = resolve_auth_token(args.token, persist=True)
+    ips = get_network_ips()
 
-    token_param = f"?token={args.token}" if args.token else ""
     print(f"=== Starting Wren Desktop Assistant on port {args.port} ===")
-    print(f"Local Widget: http://127.0.0.1:{args.port}")
-    print(f"LAN Companion: http://192.168.4.28:{args.port}{token_param}")
-    print(f"Tailscale Companion: http://100.90.174.74:{args.port}{token_param}")
-    print(f"Auth: {'Bearer token required for non-loopback' if args.token else 'None'}")
+    print(f"Local widget: http://127.0.0.1:{args.port}")
+    if ips["lan_ip"]:
+        print(f"LAN companion: http://{ips['lan_ip']}:{args.port}")
+    else:
+        print("LAN companion: no LAN address detected")
+    if ips["tailscale_ip"]:
+        print(f"Tailscale companion: http://{ips['tailscale_ip']}:{args.port}")
+    else:
+        print("Tailscale companion: not detected")
+    if retired:
+        print("The old built-in token was ignored.")
+    print("Pairing token (type this into the phone; it is not in the source):")
+    print(token)
+    print("Auth: bearer token required for every client that is not on this computer")
     print(f"STT: {args.stt} | LLM Model: {args.model}")
 
     controller = WrenController(stt_provider=args.stt, model=args.model)
-    app = create_app(controller, auth_token=args.token)
+    app = create_app(controller, auth_token=token)
 
     if args.native:
         import webview

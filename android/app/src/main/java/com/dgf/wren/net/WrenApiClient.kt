@@ -9,6 +9,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 class WrenApiClient(
@@ -17,8 +18,25 @@ class WrenApiClient(
 ) {
 
     companion object {
-        const val DEFAULT_HOST = "http://192.168.4.28:8765"
-        const val DEFAULT_TOKEN = "wren-pilot-auth-2026-dgf"
+        const val DEFAULT_HOST = ""
+        const val DEFAULT_TOKEN = ""
+        private const val RETIRED_TOKEN_SHA256 =
+            "1843dd013bce8d1d9f0c9810a03895f67f0e718e016d2cfc81a2d28f8fbe1437"
+
+        fun usableToken(saved: String?): String {
+            val value = saved?.trim().orEmpty()
+            if (value.isEmpty() || isRetiredToken(value)) return ""
+            return value
+        }
+
+        fun isRetiredToken(token: String): Boolean {
+            val digest = MessageDigest.getInstance("SHA-256")
+                .digest(token.toByteArray(Charsets.UTF_8))
+            val hex = buildString(digest.size * 2) {
+                for (byte in digest) append("%02x".format(byte.toInt() and 0xff))
+            }
+            return hex == RETIRED_TOKEN_SHA256
+        }
     }
 
     private val client = OkHttpClient.Builder()

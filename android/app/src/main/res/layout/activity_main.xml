@@ -51,38 +51,11 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
             android:background="#121826"
-            android:hint="http://192.168.4.28:8765"
+            android:hint="http://workstation:8765"
             android:padding="12dp"
             android:textColor="#F8FAFC"
             android:textColorHint="#64748B"
             android:textSize="13sp" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:orientation="horizontal">
-
-            <Button
-                android:id="@+id/btn_preset_lan"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:layout_marginEnd="4dp"
-                android:backgroundTint="#1E293B"
-                android:text="LAN (192.168.4.28)"
-                android:textSize="11sp" />
-
-            <Button
-                android:id="@+id/btn_preset_tailscale"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:layout_marginStart="4dp"
-                android:backgroundTint="#1E293B"
-                android:text="Tailscale (100.90.174.74)"
-                android:textSize="11sp" />
-        </LinearLayout>
 
         <TextView
             android:layout_width="match_parent"

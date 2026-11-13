@@ -71,8 +71,8 @@ class FloatingOrbService : Service() {
         alive = true
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val prefs = getSharedPreferences("wren_prefs", Context.MODE_PRIVATE)
-        val host = prefs.getString("host_url", WrenApiClient.DEFAULT_HOST) ?: WrenApiClient.DEFAULT_HOST
-        val token = prefs.getString("auth_token", WrenApiClient.DEFAULT_TOKEN) ?: WrenApiClient.DEFAULT_TOKEN
+        val host = prefs.getString("host_url", "") ?: ""
+        val token = WrenApiClient.usableToken(prefs.getString("auth_token", ""))
         apiClient = WrenApiClient(host, token)
         startInForeground()
         createFloatingView()

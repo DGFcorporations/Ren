@@ -37,8 +37,8 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val savedHost = prefs.getString(PREF_HOST, WrenApiClient.DEFAULT_HOST) ?: WrenApiClient.DEFAULT_HOST
-        val savedToken = prefs.getString(PREF_TOKEN, WrenApiClient.DEFAULT_TOKEN) ?: WrenApiClient.DEFAULT_TOKEN
+        val savedHost = prefs.getString(PREF_HOST, "") ?: ""
+        val savedToken = WrenApiClient.usableToken(prefs.getString(PREF_TOKEN, ""))
 
         apiClient = WrenApiClient(savedHost, savedToken)
 
@@ -47,8 +47,6 @@ class MainActivity : AppCompatActivity() {
         editHost.setText(savedHost)
         editToken.setText(savedToken)
 
-        val btnLan = findViewById<Button>(R.id.btn_preset_lan)
-        val btnTailscale = findViewById<Button>(R.id.btn_preset_tailscale)
         val btnModeElevate = findViewById<Button>(R.id.btn_mode_elevate)
         val btnModeAgent = findViewById<Button>(R.id.btn_mode_agent)
         val btnModeBrainstorm = findViewById<Button>(R.id.btn_mode_brainstorm)
@@ -58,31 +56,26 @@ class MainActivity : AppCompatActivity() {
         val btnMic = findViewById<Button>(R.id.btn_mic)
         val btnStartOrb = findViewById<Button>(R.id.btn_start_orb)
 
-        fun rememberConnection() {
+        fun rememberConnection(): Boolean {
             val host = editHost.text.toString().trim()
-            val token = editToken.text.toString().trim().ifBlank { WrenApiClient.DEFAULT_TOKEN }
+            val token = WrenApiClient.usableToken(editToken.text.toString())
+            if (host.isEmpty() || token.isEmpty()) {
+                Toast.makeText(
+                    this,
+                    "Enter the workstation address and the pairing token",
+                    Toast.LENGTH_LONG
+                ).show()
+                return false
+            }
             prefs.edit().putString(PREF_HOST, host).putString(PREF_TOKEN, token).apply()
             apiClient.updateBaseUrl(host)
             apiClient.setAuthToken(token)
-        }
-
-        btnLan.setOnClickListener {
-            val url = WrenApiClient.DEFAULT_HOST
-            editHost.setText(url)
-            rememberConnection()
-            Toast.makeText(this, "Set to LAN: $url", Toast.LENGTH_SHORT).show()
-        }
-
-        btnTailscale.setOnClickListener {
-            val url = "http://100.90.174.74:8765"
-            editHost.setText(url)
-            rememberConnection()
-            Toast.makeText(this, "Set to Tailscale: $url", Toast.LENGTH_SHORT).show()
+            return true
         }
 
         fun handleSetMode(mode: String) {
+            if (!rememberConnection()) return
             prefs.edit().putString(PREF_MODE, mode).apply()
-            rememberConnection()
             lifecycleScope.launch {
                 val res = apiClient.setMode(mode)
                 if (res.isSuccess) {
@@ -142,7 +135,8 @@ class MainActivity : AppCompatActivity() {
             }
             rememberConnection()
             val host = editHost.text.toString().trim()
-            val token = editToken.text.toString().trim().ifBlank { WrenApiClient.DEFAULT_TOKEN }
+            val token = WrenApiClient.usableToken(editToken.text.toString())
+            if (host.isEmpty() || token.isEmpty()) return@setOnClickListener
 
             val intent = Intent(this, FloatingOrbService::class.java).apply {
                 putExtra("host_url", host)

@@ -10,7 +10,9 @@ Requirements: Python 3.12, a desktop session if you want the visible browser.
 ./run_ren.sh
 ```
 
-Open `http://127.0.0.1:8765` on this computer. Off-machine clients need the bearer token. The default matches the phone app. Override both sides with `WREN_AUTH_TOKEN`.
+Open `http://127.0.0.1:8765` on this computer. That page is served by the program on this machine. It is not a public site.
+
+Clients that are not on this computer need a bearer token. Ren does not ship a password. On first start it writes one to `~/.config/wren/auth-token` and prints it. Type that value into the phone. Set `WREN_AUTH_TOKEN` before launch if you want to choose the token yourself. Do not commit it, and do not forward port 8765. A token copied from an older checkout is rejected.
 
 Set `WREN_WORKSPACE` to the folder Ren is allowed to edit. If it is unset, Ren uses the directory you started it from.
 
@@ -20,7 +22,7 @@ Live replies use a local OpenAI-compatible model at `http://127.0.0.1:18880/v1` 
 
 1. Download the **ren-android** APK from the GitHub Actions artifact or the release on this repo.
 2. Install it (Android will ask you to allow installs from the browser or Files app).
-3. Open Ren. Set the workstation URL to your LAN or Tailscale address, port `8765`, and the same token the workstation printed.
+3. Open Ren. Type the workstation URL printed at startup (LAN or Tailscale, port `8765`) and the pairing token. The app does not come with an address or a password.
 4. Grant overlay, accessibility, microphone, and notifications.
 5. Tap **Launch Ren orb**.
 
