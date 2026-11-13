@@ -6,6 +6,7 @@ calls to the loopback API. It does not open its own browser or microphone.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import sys
@@ -15,6 +16,12 @@ import urllib.request
 
 PROTOCOL = "2024-11-05"
 REN_URL = os.environ.get("REN_URL", "http://127.0.0.1:8765").rstrip("/")
+
+# Set per-request by the HTTP MCP transport so tool calls reach the same server
+# the client addressed (any port / host / future tunnel scheme). stdio leaves it unset.
+request_base_url: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "wren_ren_request_base_url", default=None
+)
 
 TOOLS = [
     {
@@ -114,8 +121,9 @@ class MCPError(RuntimeError):
 
 def _request(method: str, path: str, payload: dict | None = None, timeout: float = 30) -> dict:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
+    base = (request_base_url.get() or REN_URL).rstrip("/")
     req = urllib.request.Request(
-        REN_URL + path,
+        base + path,
         data=data,
         method=method,
         headers={"Content-Type": "application/json", "Accept": "application/json"},

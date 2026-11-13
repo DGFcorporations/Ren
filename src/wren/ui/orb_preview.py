@@ -2,11 +2,13 @@
 
 import hashlib
 import json
+import logging
 import os
 import secrets
 import socket
 import stat
 import subprocess
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -33,6 +35,25 @@ def is_loopback_client(client_host: str | None, request_host: str | None) -> boo
     if request_host and request_host not in loopback_targets:
         return False
     return True
+
+
+# Headers a reverse proxy (cloudflared, nginx, etc.) adds when forwarding.
+# Their presence means the TCP peer is the proxy, not the real client, so the
+# request must never inherit loopback trust.
+_PROXY_HEADERS = (
+    "cf-connecting-ip",
+    "cf-ray",
+    "forwarded",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-real-ip",
+)
+
+
+def has_proxy_headers(headers) -> bool:
+    """True when the request arrived through a forwarding proxy."""
+    return any(name in headers for name in _PROXY_HEADERS)
 
 
 def extract_token_from_request(request: Request) -> str | None:
@@ -197,14 +218,30 @@ def create_app(
 
     active_auth_token, _replaced = resolve_auth_token(auth_token, persist=False)
 
-    app = FastAPI(title="Wren Assistant")
+    mcp_transport = None
+    try:
+        from wren.mcp.http import create_mcp_transport
+
+        mcp_transport = create_mcp_transport()
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Ren MCP HTTP transport unavailable: %s", exc)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        if mcp_transport is not None:
+            async with mcp_transport.manager.run():
+                yield
+        else:
+            yield
+
+    app = FastAPI(title="Wren Assistant", lifespan=lifespan)
 
     @app.middleware("http")
     async def enforce_nonloopback_auth(request: Request, call_next):
         client_host = request.client.host if request.client else None
         request_host = request.url.hostname
 
-        if not is_loopback_client(client_host, request_host):
+        if not is_loopback_client(client_host, request_host) or has_proxy_headers(request.headers):
             token = extract_token_from_request(request)
             if not token or not secrets.compare_digest(token, active_auth_token):
                 return JSONResponse(
@@ -995,6 +1032,7 @@ fetchConnect();
                 "package": controller.phone_screen.get("package", ""),
                 "chars": len(controller.phone_screen.get("text") or ""),
             },
+            "mcp_http_mounted": mcp_transport is not None,
         }
 
     @app.post("/api/listen/start")
@@ -1195,7 +1233,7 @@ fetchConnect();
         client_host = websocket.client.host if websocket.client else None
         request_host = websocket.url.hostname
 
-        if not is_loopback_client(client_host, request_host):
+        if not is_loopback_client(client_host, request_host) or has_proxy_headers(websocket.headers):
             token = websocket.query_params.get("token") or websocket.headers.get("x-wren-token")
             auth_hdr = websocket.headers.get("authorization", "")
             if auth_hdr.startswith("Bearer "):
@@ -1317,5 +1355,9 @@ fetchConnect();
                 await websocket.send_json({"type": "error", "message": str(e)})
             except Exception:
                 pass
+
+    if mcp_transport is not None:
+        app.add_route("/mcp", mcp_transport, methods=["GET", "POST", "DELETE"])
+        app.add_route("/mcp/", mcp_transport, methods=["GET", "POST", "DELETE"])
 
     return app
