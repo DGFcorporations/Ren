@@ -18,6 +18,13 @@ Set `WREN_WORKSPACE` to the folder Ren is allowed to edit. If it is unset, Ren u
 
 Live replies use a local OpenAI-compatible model at `http://127.0.0.1:18880/v1` when one is running. If it is not, Ren still answers with a local fallback sentence and still previews dictation.
 
+### Desktop widget controls
+
+- **Hold-to-talk:** hold `Ctrl+Alt+Space` to dictate, release to process. Works from any app without focusing the widget. Override with `WREN_HOTKEY` (e.g. `WREN_HOTKEY='<ctrl>+<alt>+r'`).
+- **Quit:** tap `Ctrl+Alt+Q` (override with `WREN_QUIT_HOTKEY`; set it empty to disable), or click the `⏻` button on the widget twice. Both stop the service cleanly — under systemd this stops `wren.service` until restarted.
+- **Paste target:** Ren remembers the last app you were working in. Clicking **Paste** inside the widget is safe — it activates that remembered window and pastes there instead of typing into the widget. A background watcher keeps the target fresh while Ren is idle.
+- **Voice output:** Ren speaks replies and a "Draft ready" confirmation through the workstation's default audio output (`espeak-ng`, endpoint `POST /api/speak`). Install `espeak-ng` for spoken output; the widget works without it.
+
 ## Phone
 
 1. Download the **ren-android** APK from the GitHub Actions artifact or the release on this repo.

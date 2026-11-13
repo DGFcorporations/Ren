@@ -8,6 +8,8 @@ import secrets
 import socket
 import stat
 import subprocess
+import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -91,6 +93,10 @@ class DictateRequest(BaseModel):
 
 
 class ConverseRequest(BaseModel):
+    text: str
+
+
+class SpeakRequest(BaseModel):
     text: str
 
 
@@ -628,7 +634,12 @@ def create_app(
       <div class="brand-logo">Wren</div>
       <div class="target-pill" id="target-pill">🎯 Searching target...</div>
     </div>
-    <div id="status-pill" style="font-size:0.72rem; color:var(--text-muted);">IDLE</div>
+    <div style="display:flex; align-items:center; gap:8px;">
+      <div id="status-pill" style="font-size:0.72rem; color:var(--text-muted);">IDLE</div>
+      <button id="btn-quit" title="Quit Ren" onclick="shutdownRen()"
+        style="background:none; border:none; color:var(--text-muted); font-size:0.9rem;
+               cursor:pointer; padding:2px 4px;">⏻</button>
+    </div>
   </div>
 
   <div class="mode-bar">
@@ -726,6 +737,41 @@ if (authToken) {
 let currentState = "IDLE";
 let currentMode = "elevate";
 let isListening = false;
+let lastSpokenReply = '';
+let firstStatusPoll = true;
+let prevState = 'IDLE';
+let quitArmed = false;
+let quitArmTimer = null;
+
+async function shutdownRen() {
+  if (!quitArmed) {
+    quitArmed = true;
+    const btn = document.getElementById('btn-quit');
+    btn.innerText = 'sure?';
+    btn.style.color = 'var(--danger)';
+    quitArmTimer = setTimeout(() => {
+      quitArmed = false;
+      btn.innerText = '⏻';
+      btn.style.color = 'var(--text-muted)';
+    }, 3000);
+    return;
+  }
+  clearTimeout(quitArmTimer);
+  await fetch('/api/shutdown', { method: 'POST' });
+  document.getElementById('orb-caption').innerText = 'Ren stopped';
+}
+
+async function speak(text) {
+  try {
+    await fetch('/api/speak', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: text })
+    });
+  } catch (err) {
+    console.error('speak failed', err);
+  }
+}
 
 function toggleTray(id) {
   const el = document.getElementById(id);
@@ -882,17 +928,29 @@ async function fetchStatus() {
     const caption = document.getElementById('orb-caption');
     if (data.state === 'LISTENING') {
       waveform.classList.add('active');
-      caption.innerText = 'Listening... (Tap to elevate)';
+      caption.innerText = 'Listening… tap again or release hotkey to finish';
     } else if (data.state === 'PROCESSING') {
       waveform.classList.remove('active');
-      caption.innerText = 'Synthesizing...';
+      caption.innerText = 'Synthesizing…';
     } else if (data.state === 'DRAFT_READY') {
       waveform.classList.remove('active');
-      caption.innerText = 'Draft Ready (Tap to dictate new)';
+      caption.innerText = 'Draft ready — Paste writes to your last app';
     } else {
       waveform.classList.remove('active');
-      caption.innerText = 'Tap or [Space] to Speak';
+      caption.innerText = 'Tap orb, [Space], or hold Ctrl+Alt+Space';
     }
+
+    if (data.last_reply && data.last_reply !== lastSpokenReply) {
+      const isFirst = firstStatusPoll;
+      firstStatusPoll = false;
+      if (!isFirst) speak(data.last_reply);
+      lastSpokenReply = data.last_reply;
+    }
+
+    if (data.state === 'DRAFT_READY' && prevState !== 'DRAFT_READY') {
+      speak('Draft ready');
+    }
+    prevState = data.state;
 
     if (data.active_target) {
       document.getElementById('target-pill').innerText = '🎯 ' + data.active_target.wm_class;
@@ -945,7 +1003,10 @@ async function fetchConnect() {
 
 // Push to talk shortcut (Spacebar)
 window.addEventListener('keydown', (e) => {
-  if (e.code === 'Space' && e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
+  // Ignore Space while a modifier is held — Ctrl+Alt+Space is the global
+  // hold-to-talk hotkey and must not also toggle the orb.
+  if (e.code === 'Space' && !e.ctrlKey && !e.altKey && !e.metaKey &&
+      e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
     e.preventDefault();
     handleOrbClick();
   }
@@ -1099,6 +1160,41 @@ fetchConnect();
     def cancel():
         controller.cancel()
         return {"status": "cancelled"}
+
+    @app.post("/api/speak")
+    def speak(req: SpeakRequest):
+        """Speak text aloud through the workstation's default audio output (espeak-ng)."""
+        text = req.text.strip()[:2000]
+        if not text:
+            raise HTTPException(status_code=400, detail="text is required")
+        try:
+            subprocess.Popen(
+                ["espeak-ng", "-v", "en", "-s", "170", text],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            raise HTTPException(status_code=503, detail="espeak-ng is not installed") from None
+        return {"status": "speaking"}
+
+    @app.post("/api/shutdown")
+    def shutdown():
+        """Stop the Ren service cleanly. Under systemd this stops wren.service;
+        elsewhere it exits the process after the response flushes."""
+        def _stop():
+            time.sleep(0.6)
+            try:
+                subprocess.run(
+                    ["systemctl", "--user", "stop", "wren.service"],
+                    timeout=10,
+                    capture_output=True,
+                )
+            except Exception:
+                pass
+            os._exit(0)
+
+        threading.Thread(target=_stop, daemon=True).start()
+        return {"status": "stopping"}
 
     @app.get("/api/files/roots")
     def get_file_roots():

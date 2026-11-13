@@ -1,10 +1,11 @@
 """Wren Controller: Authoritative coordinator of voice, elevation, buffer, clipboard, and target paste."""
 
+import threading
 import time
 
 from wren.audio.capture import DesktopAudioCapture
-from wren.browser.session import BrowserController
 from wren.bridge.workspace import WorkspaceWriter
+from wren.browser.session import BrowserController
 from wren.clipboard.factory import get_clipboard_manager
 from wren.clipboard.x11 import ClipSnapshot
 from wren.core.buffer import Draft, DraftBuffer, Receipt
@@ -50,6 +51,28 @@ class WrenController:
         self.active_target: TargetWindow | None = None
         self._prior_clipboard_snap: ClipSnapshot | None = None
         self._last_diff: str = ""
+        self._target_watch_stop = threading.Event()
+        threading.Thread(
+            target=self._watch_targets, daemon=True, name="wren-target-watch"
+        ).start()
+
+    def _paste_target(self) -> TargetWindow:
+        """Active window for paste purposes; falls back on platforms without memory."""
+        getter = getattr(self.targets, "get_paste_target", None) or self.targets.get_active_target
+        return getter()
+
+    def _watch_targets(self) -> None:
+        """Keep the remembered external window fresh while Ren is idle, so the
+        orb can always tell which app the user was last working in."""
+        peek = getattr(self.targets, "peek_paste_target", None)
+        while not self._target_watch_stop.wait(2.5):
+            try:
+                if self.state == WrenState.IDLE and peek is not None:
+                    target = peek()
+                    if target is not None:
+                        self.active_target = target
+            except Exception:
+                pass
 
     @property
     def state(self) -> WrenState:
@@ -77,7 +100,7 @@ class WrenController:
         then begin microphone capture.
         """
         try:
-            self.active_target = self.targets.get_active_target()
+            self.active_target = self._paste_target()
         except Exception:
             self.active_target = None
 
@@ -184,11 +207,12 @@ class WrenController:
         if not self.current_draft:
             raise ValueError("No active draft to paste")
         if not self.active_target:
-            self.active_target = self.targets.get_active_target()
+            self.active_target = self._paste_target()
 
-        # Target verification check
+        # Target verification check — Ren's own widget holding focus is not a
+        # mismatch; paste_into_target activates the approved window instead.
         current = self.targets.get_active_target()
-        if current.window_id != self.active_target.window_id:
+        if not getattr(current, "is_self", False) and current.window_id != self.active_target.window_id:
             raise TargetMismatchError(
                 f"Active window changed from {self.active_target.wm_class} "
                 f"to {current.wm_class}. Aborting paste."

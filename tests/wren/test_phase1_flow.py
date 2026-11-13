@@ -105,3 +105,36 @@ def test_target_hijack_aborts_paste(mock_target):
     with patch.object(controller.targets, "get_active_target", return_value=hijacked_target):
         with pytest.raises(Exception, match="Active window changed|Target mismatch"):
             controller.paste_current_draft()
+
+
+def test_paste_proceeds_when_ren_widget_holds_focus(mock_target):
+    """Clicking Paste inside the Ren orb must not abort: the remembered
+    external target is activated and pasted into, not the widget itself."""
+    controller = WrenController(stt_provider="mock", model="auto")
+    controller.active_target = mock_target
+
+    u = controller.buffer.record_utterance("some text")
+    controller.buffer.create_draft_from_utterance(u.id, "some text")
+    controller.state_machine.transition(WrenState.LISTENING)
+    controller.state_machine.transition(WrenState.PROCESSING)
+    controller.state_machine.transition(WrenState.DRAFT_READY)
+
+    self_win = TargetWindow(
+        window_id="99999",
+        wm_class="WebKit",
+        title="Wren Assistant",
+        pid=1,
+        target_hash="hash-self",
+        is_terminal=False,
+        is_self=True,
+    )
+
+    with patch.object(controller.targets, "get_active_target", return_value=self_win), \
+         patch.object(controller.targets, "paste_into_target",
+                      return_value={"status": "pasted"}) as mock_paste, \
+         patch.object(controller.clipboard, "write", return_value="hash"), \
+         patch.object(controller.clipboard, "safe_restore", return_value=True):
+        receipt = controller.paste_current_draft()
+        assert receipt.outcome == "done"
+        mock_paste.assert_called_once_with(mock_target)
+        assert controller.state == WrenState.IDLE
