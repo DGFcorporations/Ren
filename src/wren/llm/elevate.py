@@ -85,6 +85,9 @@ class PromptElevator:
             "FREELLMAPI_BASE_URL", "http://127.0.0.1:31415/v1"
         ).rstrip("/")
         self.model = model
+        # Conversation quality: 'auto' routes to the fastest/weakest model.
+        # Converse gets its own stronger default; override with WREN_CONVERSE_MODEL.
+        self.converse_model = os.environ.get("WREN_CONVERSE_MODEL", "claude-sonnet-4-5")
         self.timeout = timeout
 
     def _chat_completion(self, payload: dict) -> str | None:
@@ -231,7 +234,7 @@ class PromptElevator:
             if role in {"user", "assistant"} and content:
                 messages.append({"role": role, "content": str(content)[:2000]})
         messages.append({"role": "user", "content": user_text})
-        payload = {"model": self.model, "messages": messages, "temperature": 0.4}
+        payload = {"model": self.converse_model, "messages": messages, "temperature": 0.4}
         reply = self._chat_completion(payload)
         if reply:
             return ElevationResult(

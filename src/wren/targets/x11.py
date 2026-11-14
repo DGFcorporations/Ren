@@ -184,24 +184,18 @@ class X11TargetManager:
         key_combo = "ctrl+shift+v" if expected_target.is_terminal else "ctrl+v"
 
         try:
+            # Always use real XTEST keys — 'key --window' synthesizes XSendEvent
+            # input that GTK/Qt apps routinely ignore for keybindings like Ctrl+V.
             if self_focused:
                 self._activate_window(expected_target.window_id)
-                time.sleep(0.1)
-                subprocess.run(
-                    ["xdotool", "key", key_combo],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                    check=True,
-                )
-            else:
-                subprocess.run(
-                    ["xdotool", "key", "--window", expected_target.window_id, key_combo],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                    check=True,
-                )
+                time.sleep(0.15)
+            subprocess.run(
+                ["xdotool", "key", key_combo],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=True,
+            )
         except Exception as e:
             raise RuntimeError(f"xdotool paste injection failed: {e}") from e
 

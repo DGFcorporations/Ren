@@ -2,6 +2,7 @@
 
 import os
 import re
+import subprocess
 import threading
 import time
 
@@ -9,7 +10,7 @@ from wren.audio.capture import DesktopAudioCapture
 from wren.bridge.workspace import WorkspaceWriter
 from wren.browser.session import BrowserController
 from wren.clipboard.factory import get_clipboard_manager
-from wren.clipboard.x11 import ClipSnapshot
+from wren.clipboard.x11 import ClipboardError, ClipSnapshot
 from wren.core.buffer import Draft, DraftBuffer, Receipt
 from wren.core.state import WrenState, WrenStateMachine
 from wren.files.ingest import UnifiedFileIngest
@@ -432,11 +433,79 @@ class WrenController:
         self.state_machine.transition(WrenState.DRAFT_READY)
         return draft
 
+    _REVISE_REPLY_RE = re.compile(
+        r"\b(say (it|that)|make (it|that)|rephrase|repeat|shorter|longer|"
+        r"more formal|less formal|simpler|friendlier|punchier|expand|"
+        r"in my own words|your (last )?(answer|reply|response))\b",
+        re.I,
+    )
+
+    _CLIP_EDIT_RE = re.compile(
+        r"\b(clipboard|that text|this text|what i copied|the text)\b"
+        r".*\b(fix|edit|rewrite|correct|change|clean|shorten|summar|translate|improve|expand|formal|spell)\b"
+        r"|\b(fix|edit|rewrite|correct|change|clean|shorten|summar|translate|improve|expand|formal|spell)\b"
+        r".*\b(clipboard|that text|this text|what i copied|the text)\b",
+        re.I,
+    )
+
+    def edit_clipboard(self, instruction: str) -> dict:
+        """OpenWhispr-style: transform the user's clipboard in place via LLM."""
+        cleaned = (instruction or "").strip()
+        snap = self.clipboard.snapshot()
+        if not snap.content.strip():
+            raise ClipboardError("Clipboard is empty — nothing to change")
+        res = self.elevator.elevate(
+            cleaned,
+            instruction=cleaned,
+            current_draft_text=snap.content,
+            mode="revise",
+        )
+        new_text = res.elevated_text.strip()
+        if not new_text:
+            raise ClipboardError("LLM returned empty edit")
+        self.clipboard.write(new_text)
+        return {
+            "type": "clipboard_updated",
+            "chars": len(new_text),
+            "preview": new_text[:240],
+            "requires_confirm": True,
+        }
+
     def converse(self, text: str, source: str = "orb") -> str:
         """Live reply for the orb. Does not paste and does not rewrite the clipboard."""
         cleaned = (text or "").strip()
         if not cleaned:
             raise ValueError("Empty message")
+        # Reply-revision intent: 'say it shorter', 'make it more formal', etc.
+        if self.last_reply and len(cleaned.split()) <= 10 and self._REVISE_REPLY_RE.search(cleaned):
+            rev = self.elevator.elevate(
+                cleaned, instruction=cleaned,
+                current_draft_text=self.last_reply, mode="revise",
+            )
+            reply = rev.elevated_text.strip() or self.last_reply
+            now = time.time()
+            self.conversation.append({"role": "user", "content": cleaned, "at": now, "src": source})
+            self.conversation.append({"role": "assistant", "content": reply, "at": time.time()})
+            self.conversation = self.conversation[-20:]
+            self.last_reply = reply
+            return reply
+
+        # Clipboard-edit intent: 'fix the spelling in my clipboard' etc.
+        if self._CLIP_EDIT_RE.search(cleaned):
+            try:
+                result = self.edit_clipboard(cleaned)
+                reply = (
+                    f"Done — your clipboard is updated ({result['chars']} chars). "
+                    f"Paste it wherever you want."
+                )
+            except ClipboardError as e:
+                reply = f"I couldn't edit the clipboard: {e}"
+            now = time.time()
+            self.conversation.append({"role": "user", "content": cleaned, "at": now, "src": source})
+            self.conversation.append({"role": "assistant", "content": reply, "at": time.time()})
+            self.conversation = self.conversation[-20:]
+            self.last_reply = reply
+            return reply
         now = time.time()
         notes: list[str] = []
         if self.active_target:
@@ -449,6 +518,18 @@ class WrenController:
             notes.append(
                 f"Phone screen ({phone.get('package', '?')}): {str(phone['text'])[:1500]}"
             )
+        # Real screen grounding: X11 primary selection = text the user is
+        # literally pointing at right now. Instant, zero LLM cost.
+        try:
+            sel = subprocess.run(
+                ["xclip", "-selection", "primary", "-o"],
+                capture_output=True, text=True, timeout=1.0, check=False,
+            )
+            sel_text = (sel.stdout or "").strip()[:800] if sel.returncode == 0 else ""
+            if sel_text:
+                notes.append(f"Highlighted text on screen:\n{sel_text}")
+        except Exception:
+            pass
         screen_note = "\n".join(notes)
         # History TTL: drop turns older than 15 min so stale sessions can't
         # masquerade as the current conversation.

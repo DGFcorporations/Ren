@@ -79,7 +79,7 @@ class NeuralTTS:
         bridge_url: str | None = None,
         voicestudio_url: str | None = None,
         default_provider: str = "qwen",
-        qwen_timeout: float = 4.0,
+        qwen_timeout: float = 1.5,
     ):
         self.quin_url = quin_url or os.environ.get(
             "QUIN_TTS_URL", "http://127.0.0.1:18882/v1/audio/speech"

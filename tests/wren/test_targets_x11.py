@@ -84,9 +84,10 @@ def test_paste_executes_shortcut_without_enter():
         assert receipt["status"] == "pasted"
         assert receipt["window_id"] == "12345"
         
-        # Verify xdotool key was Ctrl+v, NOT Return / Enter
+        # Real XTEST keys (never synthetic --window events GTK/Qt ignore),
+        # NOT Return / Enter. Target is already focused -> no activate needed.
         mock_run.assert_called_with(
-            ["xdotool", "key", "--window", "12345", "ctrl+v"],
+            ["xdotool", "key", "ctrl+v"],
             capture_output=True,
             text=True,
             check=True,
@@ -113,7 +114,7 @@ def test_paste_uses_ctrl_shift_v_for_terminal():
         assert receipt["status"] == "pasted"
         
         mock_run.assert_called_with(
-            ["xdotool", "key", "--window", "55555", "ctrl+shift+v"],
+            ["xdotool", "key", "ctrl+shift+v"],
             capture_output=True,
             text=True,
             check=True,

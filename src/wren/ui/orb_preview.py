@@ -100,6 +100,10 @@ class ConverseRequest(BaseModel):
     src: str = "orb"
 
 
+class ClipboardEditRequest(BaseModel):
+    instruction: str
+
+
 class SpeakRequest(BaseModel):
     text: str
     provider: str | None = None
@@ -1572,6 +1576,13 @@ def create_app(
             if req.speak:
                 controller.speak_async(reply)
             return {"type": "assistant_message", "text": reply, "requires_confirm": True}
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    @app.post("/api/clipboard/edit")
+    def clipboard_edit(req: ClipboardEditRequest):
+        try:
+            return controller.edit_clipboard(req.instruction)
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 

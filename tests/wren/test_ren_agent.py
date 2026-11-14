@@ -170,3 +170,47 @@ def test_stt_artifact_filter_drops_noise_hallucinations(tmp_path):
     assert controller._is_stt_artifact("Tell Dana the lease is signed", fake_wav(3.0)) is False
     # Longer real clip saying a short phrase at real energy -> kept
     assert controller._is_stt_artifact("Thank you.", fake_wav(2.5)) is False
+
+
+def test_edit_clipboard_transforms_and_verifies():
+    """OpenWhispr parity: LLM edits real clipboard content in place."""
+    controller = WrenController(stt_provider="mock")
+    app = create_app(controller)
+    client = TestClient(app)
+    controller.clipboard.write("teh meeting is at 3pm tommorow")
+    res = client.post("/api/clipboard/edit", json={"instruction": "fix the spelling"})
+    assert res.status_code == 200
+    assert res.json()["type"] == "clipboard_updated"
+    # readback-verified clipboard should no longer contain the typos
+    current = controller.clipboard.snapshot().content
+    assert "teh" not in current or "tommorow" not in current
+
+
+def test_clipboard_edit_empty_raises():
+    controller = WrenController(stt_provider="mock")
+    controller.clipboard.write("")
+    from wren.clipboard.x11 import ClipboardError
+    try:
+        controller.edit_clipboard("fix it")
+        raise AssertionError("should have raised ClipboardError")
+    except ClipboardError:
+        pass
+
+
+def test_converse_routes_clipboard_intent():
+    controller = WrenController(stt_provider="mock")
+    controller.clipboard.write("teh report is doo friday")
+    reply = controller.converse("fix the spelling in my clipboard")
+    assert "clipboard" in reply.lower()
+    assert len(controller.conversation) == 2
+    assert controller.conversation[-2]["src"] == "orb"
+
+
+def test_converse_revises_last_reply():
+    controller = WrenController(stt_provider="mock")
+    controller.last_reply = (
+        "The quarterly budget review meeting is scheduled for Thursday afternoon at three PM."
+    )
+    reply = controller.converse("say it shorter")
+    assert reply != ""
+    assert len(controller.conversation) == 2
