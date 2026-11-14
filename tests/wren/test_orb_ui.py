@@ -124,3 +124,48 @@ def test_copy_and_paste_endpoints(mock_controller):
         assert res_paste.status_code == 200
         assert res_paste.json()["status"] == "pasted"
         assert res_paste.json()["outcome"] == "done"
+
+
+def test_floating_plasma_orb_ui_and_voice_endpoints(mock_controller):
+    events = []
+
+    class FakeWindowHooks:
+        def set_hit_region(self, mode: str) -> None:
+            events.append(("region", mode))
+
+        def move_by(self, dx: int, dy: int) -> None:
+            events.append(("move", dx, dy))
+
+        def set_focusable(self, accept: bool) -> None:
+            events.append(("focus", accept))
+
+    app = create_app(mock_controller, window_hooks=FakeWindowHooks())
+    client = TestClient(app)
+
+    # Transparent floating plasma orb with radial menu, no rectangular card chrome
+    html = client.get("/").text
+    assert "plasma-canvas" in html
+    assert "radial-menu" in html
+
+    # Status exposes live voice_level and TTS state
+    st = client.get("/api/status").json()
+    assert "voice_level" in st
+    assert st["tts_provider"] == "qwen"
+
+    # Switch TTS provider between qwen and deepgram
+    vc = client.post("/api/voice/config", json={"provider": "deepgram", "muted": False})
+    assert vc.status_code == 200
+    assert vc.json()["provider"] == "deepgram"
+
+    # Start listening with explicit 'talk' intent
+    with patch.object(mock_controller.audio, "start"):
+        r = client.post("/api/listen/start", json={"intent": "talk"})
+        assert r.status_code == 200
+        assert mock_controller._listen_intent == "talk"
+        mock_controller.cancel()
+
+    # Window hit-region and drag-move hooks
+    assert client.post("/api/ui/hitregion", json={"mode": "expanded"}).status_code == 200
+    assert client.post("/api/ui/move", json={"dx": 12, "dy": -8}).status_code == 200
+    assert ("region", "expanded") in events
+    assert ("move", 12, -8) in events

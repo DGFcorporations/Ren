@@ -1,5 +1,6 @@
 """Wren Controller: Authoritative coordinator of voice, elevation, buffer, clipboard, and target paste."""
 
+import os
 import threading
 import time
 
@@ -13,9 +14,10 @@ from wren.core.state import WrenState, WrenStateMachine
 from wren.files.ingest import UnifiedFileIngest
 from wren.llm.elevate import PromptElevator
 from wren.screen.inspector import ScreenContext, ScreenInspector
-from wren.stt.engine import BaseSTT, FasterWhisperSTT, MockSTT
+from wren.stt.engine import BaseSTT, CloudHybridSTT, FasterWhisperSTT, MockSTT
 from wren.targets.factory import get_target_manager
 from wren.targets.x11 import TargetMismatchError, TargetWindow
+from wren.tts.engine import NeuralTTS, TTSAudio
 
 
 class WrenController:
@@ -23,14 +25,18 @@ class WrenController:
 
     def __init__(
         self,
-        stt_provider: str = "faster-whisper",
+        stt_provider: str = "hybrid",
         model: str = "auto",
         llm_base_url: str = "http://127.0.0.1:18880/v1",
+        tts_provider: str | None = None,
     ):
         self.state_machine = WrenStateMachine()
         self.buffer = DraftBuffer()
         self.audio = DesktopAudioCapture()
         self.elevator = PromptElevator(base_url=llm_base_url, model=model)
+        self.tts = NeuralTTS(
+            default_provider=tts_provider or os.environ.get("WREN_TTS_PROVIDER", "qwen")
+        )
         self.clipboard = get_clipboard_manager()
         self.targets = get_target_manager()
         self.screen_inspector = ScreenInspector()
@@ -40,17 +46,24 @@ class WrenController:
         self.phone_screen: dict = {"package": "", "text": "", "at": 0.0}
         self.conversation: list[dict] = []
         self.last_reply: str = ""
+        self.last_transcript: str = ""
+        self.is_speaking: bool = False
+        self.speaking_level: float = 0.0
         self.browser = BrowserController()
         self.workspace = WorkspaceWriter()
-        
+
         if stt_provider == "mock":
             self.stt: BaseSTT = MockSTT()
+        elif stt_provider == "faster-whisper":
+            self.stt = FasterWhisperSTT(model_size="base.en")
         else:
-            self.stt: BaseSTT = FasterWhisperSTT(model_size="base.en")
-            
+            self.stt = CloudHybridSTT()
+
         self.active_target: TargetWindow | None = None
         self._prior_clipboard_snap: ClipSnapshot | None = None
         self._last_diff: str = ""
+        self._listen_intent: str = "auto"
+        self._pre_listen_state: WrenState = WrenState.IDLE
         self._target_watch_stop = threading.Event()
         threading.Thread(
             target=self._watch_targets, daemon=True, name="wren-target-watch"
@@ -86,19 +99,52 @@ class WrenController:
     def last_diff(self) -> str:
         return self._last_diff
 
+    @property
+    def voice_level(self) -> float:
+        """Unified 0.0..1.0 energy level driving the orb's radial glow equalizer."""
+        return max(self.audio.level, self.speaking_level)
+
     def set_mode(self, mode: str) -> str:
-        """Set operation mode: 'elevate' | 'agent' | 'brainstorm'."""
-        valid_modes = {"elevate", "agent", "brainstorm"}
+        """Set operation mode: 'elevate' | 'agent' | 'brainstorm' | 'talk'."""
+        valid_modes = {"elevate", "agent", "brainstorm", "talk"}
         if mode not in valid_modes:
             raise ValueError(f"Invalid mode '{mode}'. Valid modes: {valid_modes}")
         self.mode = mode
         return self.mode
 
-    def start_listening(self) -> None:
+    def speak_async(self, text: str, provider: str | None = None) -> None:
+        """Synthesize and play speech asynchronously through system output while animating orb level."""
+        if self.tts.muted or not (text or "").strip():
+            return
+
+        def _run() -> None:
+            audio: TTSAudio | None = self.tts.synthesize(text, provider=provider)
+            if audio is None:
+                return
+            self.is_speaking = True
+            try:
+                def _on_lvl(val: float) -> None:
+                    self.speaking_level = val
+
+                self.tts.play_audio_bytes(audio, on_level=_on_lvl)
+            finally:
+                self.is_speaking = False
+                self.speaking_level = 0.0
+
+        threading.Thread(target=_run, daemon=True, name="wren-tts-play").start()
+
+    def start_listening(self, intent: str = "auto") -> None:
         """
         Record the currently focused target window BEFORE recording,
-        then begin microphone capture.
+        halt any active TTS playback (barge-in), then begin microphone capture.
         """
+        self.tts.stop()
+        self.is_speaking = False
+        self.speaking_level = 0.0
+        if self.state == WrenState.ERROR:
+            self.state_machine.cancel()
+        self._pre_listen_state = self.state
+        self._listen_intent = intent
         try:
             self.active_target = self._paste_target()
         except Exception:
@@ -108,18 +154,41 @@ class WrenController:
         self.state_machine.transition(WrenState.LISTENING)
         self.audio.start()
 
-    def stop_listening(self) -> Draft:
+    def _restore_after_empty_capture(self) -> None:
+        if self.current_draft and self._pre_listen_state == WrenState.DRAFT_READY:
+            self.state_machine.transition(WrenState.DRAFT_READY)
+        else:
+            self.state_machine.transition(WrenState.IDLE)
+
+    def stop_listening(self, intent: str | None = None) -> Draft | None:
         """
-        Stop audio recording, run STT transcription, elevate text via LLM,
-        and stage in the draft buffer without touching the system clipboard.
+        Stop audio recording, run AST/STT transcription, and either:
+          - 'talk': converse back via FreeLLMAPI + neural TTS (two-way voice conversation)
+          - 'dictate': elevate text into the preview draft buffer without touching clipboard
         """
-        wav_path = self.audio.stop()
+        eff_intent = intent or self._listen_intent
+        if eff_intent == "auto":
+            eff_intent = "talk" if self.mode == "talk" else "dictate"
+
+        wav_data = self.audio.stop()
         self.state_machine.transition(WrenState.PROCESSING)
 
-        if not wav_path:
-            raw_text = "No audio detected"
-        else:
-            raw_text = self.stt.transcribe(wav_path)
+        if not wav_data:
+            self._restore_after_empty_capture()
+            return None
+
+        raw_text = (self.stt.transcribe(wav_data) or "").strip()
+        if not raw_text:
+            self._restore_after_empty_capture()
+            return None
+
+        self.last_transcript = raw_text
+
+        if eff_intent == "talk":
+            reply = self.converse(raw_text)
+            self.state_machine.transition(WrenState.IDLE)
+            self.speak_async(reply)
+            return None
 
         utterance = self.buffer.record_utterance(raw_text=raw_text)
         prompt_text = raw_text
@@ -299,7 +368,11 @@ class WrenController:
             "text": (text or "")[:20000],
             "at": time.time(),
         }
-        return {"type": "screen_stored", "chars": len(self.phone_screen["text"]), "package": self.phone_screen["package"]}
+        return {
+            "type": "screen_stored",
+            "chars": len(self.phone_screen["text"]),
+            "package": self.phone_screen["package"],
+        }
 
     def accept_dictation(self, text: str, source: str = "android") -> Draft:
         """Turn a finished dictation into a paste preview. Does not paste."""
@@ -327,7 +400,14 @@ class WrenController:
         cleaned = (text or "").strip()
         if not cleaned:
             raise ValueError("Empty message")
-        screen_note = self.phone_screen.get("text") or ""
+        notes: list[str] = []
+        if self.active_target:
+            notes.append(
+                f"Desktop focus: {self.active_target.wm_class} — {self.active_target.title[:160]}"
+            )
+        if self.phone_screen.get("text"):
+            notes.append(str(self.phone_screen["text"]))
+        screen_note = "\n".join(notes)
         result = self.elevator.converse(cleaned, screen_note=screen_note, history=self.conversation)
         reply = result.elevated_text.strip()
         self.conversation.append({"role": "user", "content": cleaned})
@@ -348,5 +428,8 @@ class WrenController:
 
     def cancel(self) -> None:
         """Cancel and reset state to IDLE."""
+        self.tts.stop()
+        self.is_speaking = False
+        self.speaking_level = 0.0
         self.audio.cancel()
         self.state_machine.cancel()

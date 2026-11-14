@@ -1,5 +1,6 @@
 """Tests for Wren X11 clipboard adapter."""
 import hashlib
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -72,3 +73,19 @@ def test_clipboard_safe_restore_prevents_clobbering_external_copy():
         ]
         restored = clip.safe_restore(snap, wren_written_text=wren_text)
         assert restored is False
+
+
+def test_clipboard_write_uses_devnull_so_xclip_daemon_never_hangs():
+    """xclip -i forks a background X11 selection owner; capture_output=True
+    leaves stdout/stderr pipes open and hangs subprocess.run until timeout."""
+    clip = X11Clipboard()
+    with patch("subprocess.run") as mock_run:
+        mock_run.side_effect = [
+            MagicMock(returncode=0),
+            MagicMock(returncode=0, stdout="hello"),
+        ]
+        clip.write("hello")
+        write_kwargs = mock_run.call_args_list[0].kwargs
+        assert write_kwargs.get("stdout") is subprocess.DEVNULL
+        assert write_kwargs.get("stderr") is subprocess.DEVNULL
+        assert not write_kwargs.get("capture_output", False)

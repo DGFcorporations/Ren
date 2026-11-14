@@ -1,4 +1,4 @@
-"""Wren Floating Orb & Draft Preview Web Server."""
+"""Wren Floating Chromatic Plasma Orb, Radial Menu, and REST/WS/MCP Server."""
 
 import hashlib
 import json
@@ -12,8 +12,9 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -23,12 +24,12 @@ from wren.files.ingest import FileIngestError
 # SHA-256 of the old built-in token. The token itself is not stored here.
 RETIRED_TOKEN_SHA256 = "1843dd013bce8d1d9f0c9810a03895f67f0e718e016d2cfc81a2d28f8fbe1437"
 
+# Optional workstation plasma orb artwork (procedural plasma renders cleanly if absent).
+WORKSTATION_ORB_JPG = Path("/home/chandler/Dev/repos/dgf-ops/workstation/static/ag-plasma-orb.jpg")
+
 
 def is_loopback_client(client_host: str | None, request_host: str | None) -> bool:
-    """Determine whether the request originates from a local loopback interface.
-
-    Both the client peer IP and target hostname must resolve to loopback.
-    """
+    """Determine whether the request originates from a local loopback interface."""
     loopback_peers = {"127.0.0.1", "::1", "localhost", "testclient"}
     loopback_targets = {"127.0.0.1", "::1", "localhost", "testserver"}
 
@@ -39,9 +40,6 @@ def is_loopback_client(client_host: str | None, request_host: str | None) -> boo
     return True
 
 
-# Headers a reverse proxy (cloudflared, nginx, etc.) adds when forwarding.
-# Their presence means the TCP peer is the proxy, not the real client, so the
-# request must never inherit loopback trust.
 _PROXY_HEADERS = (
     "cf-connecting-ip",
     "cf-ray",
@@ -87,6 +85,10 @@ class ModeRequest(BaseModel):
     mode: str
 
 
+class ListenStartRequest(BaseModel):
+    intent: str = "auto"
+
+
 class DictateRequest(BaseModel):
     text: str
     source: str = "android"
@@ -94,10 +96,30 @@ class DictateRequest(BaseModel):
 
 class ConverseRequest(BaseModel):
     text: str
+    speak: bool = False
 
 
 class SpeakRequest(BaseModel):
     text: str
+    provider: str | None = None
+
+
+class VoiceConfigRequest(BaseModel):
+    provider: str | None = None
+    muted: bool | None = None
+
+
+class HitRegionRequest(BaseModel):
+    mode: str = "orb"
+
+
+class WindowMoveRequest(BaseModel):
+    dx: int = 0
+    dy: int = 0
+
+
+class WindowFocusRequest(BaseModel):
+    accept: bool = False
 
 
 class PhoneScreenRequest(BaseModel):
@@ -155,11 +177,7 @@ def _write_token(path: Path, token: str) -> None:
 
 
 def resolve_auth_token(explicit: str | None = None, *, persist: bool = True) -> tuple[str, bool]:
-    """Return the bearer token for clients that are not on this computer.
-
-    A value passed in, then WREN_AUTH_TOKEN, then ~/.config/wren/auth-token.
-    The old built-in token is rejected. A new token is created only when nothing usable exists.
-    """
+    """Return the bearer token for non-loopback clients."""
     replaced = False
     if explicit is not None:
         chosen = _usable_token(explicit)
@@ -215,9 +233,959 @@ def get_network_ips() -> dict[str, str]:
     return {"lan_ip": lan_ip, "tailscale_ip": tailscale_ip}
 
 
+FLOATING_PLASMA_ORB_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Wren Assistant</title>
+<style>
+  :root {
+    --obsidian: rgba(5, 10, 22, 0.92);
+    --cyan: #38bdf8;
+    --neon: #00f5ff;
+    --violet: #a855f7;
+    --magenta: #ff2bd6;
+    --emerald: #10b981;
+    --danger: #f43f5e;
+    --fg: #e2e8f0;
+    --muted: #94a3b8;
+    --font: "JetBrains Mono", "Inter", system-ui, -apple-system, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%;
+    height: 100%;
+    background: transparent !important;
+    overflow: hidden;
+    font-family: var(--font);
+    color: var(--fg);
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  #stage {
+    position: relative;
+    width: 340px;
+    height: 390px;
+    margin: 0 auto;
+    background: transparent;
+    pointer-events: none;
+  }
+
+  /* Floating Preview / Conversation Pill — only visible when active */
+  #draft-box {
+    position: absolute;
+    left: 14px;
+    right: 14px;
+    bottom: 138px;
+    background: var(--obsidian);
+    border: 1px solid rgba(56, 189, 248, 0.62);
+    border-radius: 14px;
+    padding: 10px 12px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.68), 0 0 22px rgba(0, 245, 255, 0.20);
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+    pointer-events: auto;
+    animation: floatIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  #draft-box.visible { display: flex; }
+
+  @keyframes floatIn {
+    from { opacity: 0; transform: translateY(10px) scale(0.96); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+
+  .pill-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--cyan);
+    font-weight: 700;
+  }
+  .target-chip {
+    color: var(--muted);
+    font-weight: 500;
+    max-width: 170px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-transform: none;
+  }
+  .icon-close {
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0 3px;
+    line-height: 1;
+  }
+  .icon-close:hover { color: #fff; }
+
+  #pill-text {
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--fg);
+    max-height: 112px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+
+  .pill-actions {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
+  }
+  .pbtn {
+    background: rgba(15, 25, 45, 0.9);
+    color: var(--fg);
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    border-radius: 8px;
+    padding: 4px 9px;
+    font: 700 10.5px var(--font);
+    letter-spacing: 0.03em;
+    cursor: pointer;
+    transition: all 0.12s ease;
+  }
+  .pbtn:hover {
+    border-color: var(--neon);
+    color: #fff;
+    box-shadow: 0 0 10px rgba(0, 245, 255, 0.28);
+  }
+  .pbtn.primary {
+    background: linear-gradient(135deg, #0284c7, #00c8ff);
+    color: #020813;
+    border-color: var(--neon);
+  }
+  .pbtn.primary:hover {
+    filter: brightness(1.1);
+    color: #000;
+  }
+
+  /* Companion pairing drawer (mobile bridge info) */
+  #pair-drawer {
+    position: absolute;
+    left: 16px;
+    right: 16px;
+    top: 8px;
+    display: none;
+    flex-direction: column;
+    gap: 6px;
+    background: var(--obsidian);
+    border: 1px solid rgba(56, 189, 248, 0.55);
+    border-radius: 12px;
+    padding: 10px 12px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.65), 0 0 16px rgba(0, 245, 255, 0.18);
+    pointer-events: auto;
+    animation: floatIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  #pair-drawer.visible { display: flex; }
+  #connect-body {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 10.5px;
+  }
+  .connect-item {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    color: var(--muted);
+  }
+  .connect-val {
+    color: var(--fg);
+    font-weight: 700;
+    text-align: right;
+    word-break: break-all;
+  }
+
+  /* Compact 1-line floating prompt input */
+  #ask-bar {
+    position: absolute;
+    left: 16px;
+    right: 16px;
+    bottom: 138px;
+    display: none;
+    align-items: center;
+    gap: 6px;
+    background: var(--obsidian);
+    border: 1px solid var(--neon);
+    border-radius: 999px;
+    padding: 5px 8px 5px 13px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.65), 0 0 18px rgba(0, 245, 255, 0.24);
+    pointer-events: auto;
+  }
+  #ask-bar.visible { display: flex; }
+  #ask-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: #fff;
+    font: 12px var(--font);
+  }
+  #ask-input::placeholder { color: var(--muted); }
+
+  /* Radial Fan-Out Menu around the Plasma Orb */
+  #radial-menu {
+    position: absolute;
+    left: 170px;
+    top: 322px;
+    width: 0;
+    height: 0;
+    pointer-events: none;
+  }
+  .rnode {
+    position: absolute;
+    left: -21px;
+    top: -21px;
+    width: 42px;
+    height: 42px;
+    border-radius: 50%;
+    background: rgba(6, 12, 26, 0.92);
+    border: 1px solid rgba(56, 189, 248, 0.55);
+    color: var(--fg);
+    font: 700 9.5px var(--font);
+    letter-spacing: 0.04em;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    opacity: 0;
+    transform: translate(0px, 0px) scale(0.35);
+    transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1),
+                opacity 0.16s ease,
+                border-color 0.14s ease,
+                box-shadow 0.14s ease;
+    pointer-events: none;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.65), 0 0 10px rgba(56, 189, 248, 0.18);
+  }
+  #radial-menu.open .rnode {
+    opacity: 1;
+    transform: translate(var(--tx), var(--ty)) scale(1);
+    pointer-events: auto;
+  }
+  .rnode:hover {
+    border-color: var(--neon);
+    color: #fff;
+    box-shadow: 0 0 16px rgba(0, 245, 255, 0.52);
+  }
+  .rnode.active {
+    background: rgba(0, 245, 255, 0.20);
+    border-color: var(--neon);
+    color: var(--neon);
+  }
+  .rnode.danger {
+    border-color: var(--danger);
+    color: var(--danger);
+  }
+  .rnode .ricon { font-size: 12px; line-height: 1; }
+  .rnode .rlbl { font-size: 8px; margin-top: 2px; opacity: 0.9; }
+
+  /* Core Chromatic Plasma Orb Anchor */
+  #orb-anchor {
+    position: absolute;
+    left: 95px;
+    top: 247px;
+    width: 150px;
+    height: 150px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+  #plasma-canvas {
+    width: 150px;
+    height: 150px;
+    display: block;
+    pointer-events: none;
+  }
+  #orb-hit {
+    position: absolute;
+    width: 74px;
+    height: 74px;
+    border-radius: 50%;
+    cursor: pointer;
+    pointer-events: auto;
+    background: transparent;
+  }
+
+  #micro-tag {
+    position: absolute;
+    left: 50%;
+    bottom: 4px;
+    transform: translateX(-50%);
+    background: rgba(5, 10, 22, 0.80);
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    border-radius: 999px;
+    padding: 1px 8px;
+    font: 700 9px var(--font);
+    letter-spacing: 0.08em;
+    color: var(--cyan);
+    white-space: nowrap;
+    pointer-events: none;
+    transition: all 0.15s ease;
+  }
+  #micro-tag.listening {
+    border-color: var(--neon);
+    color: #fff;
+    box-shadow: 0 0 12px rgba(0, 245, 255, 0.55);
+  }
+  #micro-tag.speaking {
+    border-color: var(--magenta);
+    color: #fff;
+    box-shadow: 0 0 12px rgba(255, 43, 214, 0.50);
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <!-- Floating Preview / Reply Pill -->
+  <div id="draft-box">
+    <div class="pill-head">
+      <span id="pill-kind">DRAFT</span>
+      <span class="target-chip" id="pill-target"></span>
+      <button class="icon-close" title="Dismiss" onclick="dismissPill()">✕</button>
+    </div>
+    <div id="pill-text"></div>
+    <div class="pill-actions" id="pill-actions-draft">
+      <button class="pbtn primary" id="btn-paste" onclick="pasteDraft()">Paste</button>
+      <button class="pbtn" id="btn-copy" onclick="copyDraft()">Copy</button>
+      <button class="pbtn" onclick="askFromDraft()">Ask Ren</button>
+      <button class="pbtn" onclick="revertDraft()">Raw</button>
+    </div>
+    <div class="pill-actions" id="pill-actions-reply" style="display:none;">
+      <button class="pbtn primary" onclick="triggerListen('talk')">Reply</button>
+      <button class="pbtn" id="btn-copy-reply" onclick="copyReply()">Copy</button>
+      <button class="pbtn" onclick="ReplaySpeech()">Replay</button>
+    </div>
+  </div>
+
+  <!-- Compact 1-line Ask Ren Input -->
+  <div id="ask-bar">
+    <input id="ask-input" type="text" placeholder="Ask Ren anything… (Enter)" />
+    <button class="pbtn primary" onclick="submitAsk()">Send</button>
+    <button class="icon-close" onclick="closeAsk()">✕</button>
+  </div>
+
+  <!-- 7-Node Radial Fan-Out Menu -->
+  <div id="radial-menu">
+    <button class="rnode" style="--tx:-100px; --ty:-18px;"
+      title="Talk with Ren (Hold Alt+Space)" onclick="triggerListen('talk')">
+      <span class="ricon">◉</span><span class="rlbl">TALK</span>
+    </button>
+    <button class="rnode" style="--tx:-82px; --ty:-61px;"
+      title="Dictate to preview (Hold Ctrl+Shift)" onclick="triggerListen('dictate')">
+      <span class="ricon">✦</span><span class="rlbl">DICT</span>
+    </button>
+    <button class="rnode" id="node-mode" style="--tx:-46px; --ty:-91px;"
+      title="Cycle Dictation Mode" onclick="cycleMode()">
+      <span class="ricon" id="lbl-mode-icon">⚡</span><span class="rlbl" id="lbl-mode">ELV</span>
+    </button>
+    <button class="rnode" style="--tx:0px; --ty:-102px;"
+      title="Type a question to Ren" onclick="toggleAsk()">
+      <span class="ricon">💬</span><span class="rlbl">ASK</span>
+    </button>
+    <button class="rnode" id="node-voice" style="--tx:46px; --ty:-91px;"
+      title="Cycle Voice: Qwen / Deepgram / Studio / Mute" onclick="cycleVoice()">
+      <span class="ricon">♫</span><span class="rlbl" id="lbl-voice">QWN</span>
+    </button>
+    <button class="rnode" id="node-pair" style="--tx:82px; --ty:-61px;"
+      title="Pair phone / companion device" onclick="togglePair()">
+      <span class="ricon">⇄</span><span class="rlbl">PAIR</span>
+    </button>
+    <button class="rnode" id="node-quit" style="--tx:100px; --ty:-18px;"
+      title="Quit Ren (Ctrl+Alt+Q)" onclick="shutdownRen()">
+      <span class="ricon" id="lbl-quit-icon">⏻</span><span class="rlbl" id="lbl-quit">QUIT</span>
+    </button>
+  </div>
+
+  <!-- Companion Pairing Drawer -->
+  <div id="pair-drawer">
+    <div class="pill-head">
+      <span>📱 COMPANION BRIDGE</span>
+      <button class="icon-close" title="Close" onclick="togglePair()">✕</button>
+    </div>
+    <div id="connect-body">
+      <div class="connect-item"><span>LAN IP:</span>
+        <span class="connect-val" id="lan-ip">not detected</span></div>
+      <div class="connect-item"><span>Tailscale IP:</span>
+        <span class="connect-val" id="tailscale-ip">not detected</span></div>
+      <div class="connect-item"><span>WebSocket:</span><span class="connect-val">ws://…/ws/connect</span></div>
+      <div class="connect-item"><span>Token:</span>
+        <span class="connect-val">~/.config/wren/auth-token</span></div>
+    </div>
+  </div>
+
+  <!-- Workstation Chromatic Plasma Orb + 48-Bar Radial Voice Equalizer -->
+  <div id="orb-anchor">
+    <canvas id="plasma-canvas" width="300" height="300"></canvas>
+    <div id="orb-hit"
+      title="Click for menu · Drag to move · Alt+Space Talk · Ctrl+Shift Dictate"></div>
+  </div>
+  <div id="micro-tag">REN</div>
+</div>
+
+<script>
+const urlParams = new URLSearchParams(window.location.search);
+const authToken = urlParams.get('token') || '';
+if (authToken) {
+  const originalFetch = window.fetch;
+  window.fetch = function(url, options = {}) {
+    const opts = { ...options };
+    opts.headers = new Headers(opts.headers || {});
+    if (!opts.headers.has('Authorization')) {
+      opts.headers.set('Authorization', `Bearer ${authToken}`);
+    }
+    return originalFetch(url, opts);
+  };
+}
+
+const canvas = document.getElementById('plasma-canvas');
+const ctx = canvas.getContext('2d');
+const orbImg = new Image();
+orbImg.src = '/api/orb-texture';
+
+let appState = 'IDLE';
+let appMode = 'elevate';
+let ttsProvider = 'qwen';
+let ttsMuted = false;
+let isSpeaking = false;
+let targetLevel = 0.0;
+let smoothLevel = 0.0;
+
+let menuOpen = false;
+let askOpen = false;
+let pairOpen = false;
+let pillMode = null; // null | 'draft' | 'reply'
+let currentDraftId = null;
+let dismissedDraftId = null;
+let lastSeenReply = '';
+let firstPoll = true;
+let replyHideTimer = null;
+let quitArmed = false;
+let quitTimer = null;
+let lastRegion = '';
+
+function syncHitRegion() {
+  let next = 'orb';
+  if (pillMode !== null || askOpen || pairOpen) next = 'expanded';
+  else if (menuOpen) next = 'radial';
+  if (next === lastRegion) return;
+  lastRegion = next;
+  fetch('/api/ui/hitregion', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode: next })
+  }).catch(() => {});
+}
+
+function setMenuOpen(v) {
+  menuOpen = v;
+  document.getElementById('radial-menu').classList.toggle('open', menuOpen);
+  syncHitRegion();
+}
+
+// Drag-to-move vs click-to-bloom on the Orb
+(function wireOrbPointer() {
+  const hit = document.getElementById('orb-hit');
+  let down = false;
+  let dragged = false;
+  let lastX = 0, lastY = 0;
+
+  hit.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    down = true;
+    dragged = false;
+    lastX = e.screenX;
+    lastY = e.screenY;
+  });
+
+  window.addEventListener('mousemove', (e) => {
+    if (!down) return;
+    const dx = e.screenX - lastX;
+    const dy = e.screenY - lastY;
+    if (Math.abs(dx) + Math.abs(dy) >= 4) {
+      dragged = true;
+      lastX = e.screenX;
+      lastY = e.screenY;
+      fetch('/api/ui/move', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dx, dy })
+      }).catch(() => {});
+    }
+  });
+
+  window.addEventListener('mouseup', async () => {
+    if (!down) return;
+    down = false;
+    if (dragged) return;
+    if (appState === 'LISTENING') {
+      await fetch('/api/listen/stop', { method: 'POST' });
+      pollStatus();
+      return;
+    }
+    if (isSpeaking) {
+      await fetch('/api/cancel', { method: 'POST' });
+      pollStatus();
+      return;
+    }
+    setMenuOpen(!menuOpen);
+  });
+})();
+
+async function triggerListen(intent) {
+  setMenuOpen(false);
+  if (appState === 'LISTENING') {
+    await fetch('/api/listen/stop', { method: 'POST' });
+  } else {
+    await fetch('/api/listen/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ intent })
+    });
+  }
+  pollStatus();
+}
+
+const MODES = ['elevate', 'agent', 'brainstorm'];
+const MODE_SHORT = { elevate: 'ELV', agent: 'AGT', brainstorm: 'BRN', talk: 'TLK' };
+async function cycleMode() {
+  const idx = (MODES.indexOf(appMode) + 1) % MODES.length;
+  const next = MODES[idx];
+  const r = await fetch('/api/mode', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode: next })
+  });
+  if (r.ok) {
+    appMode = next;
+    document.getElementById('lbl-mode').innerText = MODE_SHORT[next] || 'ELV';
+  }
+}
+
+const VOICES = [
+  { provider: 'qwen', muted: false, label: 'QWN' },
+  { provider: 'deepgram', muted: false, label: 'DGM' },
+  { provider: 'voicestudio', muted: false, label: 'VST' },
+  { provider: 'qwen', muted: true, label: 'OFF' },
+];
+let voiceIdx = 0;
+async function cycleVoice() {
+  voiceIdx = (voiceIdx + 1) % VOICES.length;
+  const v = VOICES[voiceIdx];
+  const r = await fetch('/api/voice/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider: v.provider, muted: v.muted })
+  });
+  if (r.ok) {
+    ttsProvider = v.provider;
+    ttsMuted = v.muted;
+    document.getElementById('lbl-voice').innerText = v.label;
+    document.getElementById('node-voice').classList.toggle('active', !v.muted);
+  }
+}
+
+async function fetchConnect() {
+  try {
+    const res = await fetch('/api/connect');
+    const data = await res.json();
+    if (data.lan_ip) {
+      document.getElementById('lan-ip').innerText = `${data.lan_ip}:${data.port}`;
+    }
+    if (data.tailscale_ip) {
+      document.getElementById('tailscale-ip').innerText = `${data.tailscale_ip}:${data.port}`;
+    }
+  } catch (_) {}
+}
+
+function togglePair() {
+  pairOpen = !pairOpen;
+  document.getElementById('pair-drawer').classList.toggle('visible', pairOpen);
+  if (pairOpen) { setMenuOpen(false); fetchConnect(); }
+  syncHitRegion();
+}
+
+function toggleAsk() {
+  if (askOpen) { closeAsk(); return; }
+  setMenuOpen(false);
+  askOpen = true;
+  document.getElementById('ask-bar').classList.add('visible');
+  syncHitRegion();
+  fetch('/api/ui/focus', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ accept: true })
+  }).then(() => {
+    setTimeout(() => document.getElementById('ask-input').focus(), 60);
+  }).catch(() => {});
+}
+
+function closeAsk() {
+  askOpen = false;
+  document.getElementById('ask-bar').classList.remove('visible');
+  fetch('/api/ui/focus', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ accept: false })
+  }).catch(() => {});
+  syncHitRegion();
+}
+
+async function submitAsk() {
+  const inp = document.getElementById('ask-input');
+  const text = inp.value.trim();
+  if (!text) return;
+  inp.value = '';
+  closeAsk();
+  const r = await fetch('/api/converse', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, speak: true })
+  });
+  if (r.ok) {
+    const d = await r.json();
+    lastSeenReply = d.text || '';
+    showReplyPill(lastSeenReply);
+  }
+}
+
+document.getElementById('ask-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); submitAsk(); }
+  if (e.key === 'Escape') { e.preventDefault(); closeAsk(); }
+});
+
+function showDraftPill(draft, target) {
+  clearTimeout(replyHideTimer);
+  pillMode = 'draft';
+  document.getElementById('pill-kind').innerText =
+    (appMode || 'elevate').toUpperCase() + ' · R' + draft.revision;
+  document.getElementById('pill-target').innerText = target ? ('→ ' + target.wm_class) : '';
+  document.getElementById('pill-text').innerText = draft.text;
+  document.getElementById('pill-actions-draft').style.display = 'flex';
+  document.getElementById('pill-actions-reply').style.display = 'none';
+  document.getElementById('draft-box').classList.add('visible');
+  syncHitRegion();
+}
+
+function showReplyPill(replyText) {
+  if (!replyText) return;
+  clearTimeout(replyHideTimer);
+  pillMode = 'reply';
+  document.getElementById('pill-kind').innerText = 'REN · ' + (ttsProvider || 'VOICE').toUpperCase();
+  document.getElementById('pill-target').innerText = '';
+  document.getElementById('pill-text').innerText = replyText;
+  document.getElementById('pill-actions-draft').style.display = 'none';
+  document.getElementById('pill-actions-reply').style.display = 'flex';
+  document.getElementById('draft-box').classList.add('visible');
+  syncHitRegion();
+  replyHideTimer = setTimeout(() => {
+    if (pillMode === 'reply' && !isSpeaking) hidePill();
+  }, 16000);
+}
+
+function hidePill() {
+  pillMode = null;
+  document.getElementById('draft-box').classList.remove('visible');
+  syncHitRegion();
+}
+
+async function dismissPill() {
+  if (pillMode === 'draft' && currentDraftId) {
+    dismissedDraftId = currentDraftId;
+    await fetch('/api/dismiss', { method: 'POST' }).catch(() => {});
+  }
+  hidePill();
+}
+
+async function pasteDraft() {
+  const btn = document.getElementById('btn-paste');
+  btn.innerText = '…';
+  const r = await fetch('/api/paste', { method: 'POST' });
+  if (r.ok) {
+    btn.innerText = 'Pasted ✓';
+    dismissedDraftId = currentDraftId;
+    setTimeout(() => { btn.innerText = 'Paste'; hidePill(); }, 550);
+  } else {
+    const err = await r.json().catch(() => ({}));
+    btn.innerText = 'Retry';
+    document.getElementById('pill-target').innerText = err.detail ? err.detail.slice(0, 34) : 'focus app';
+    setTimeout(() => { btn.innerText = 'Paste'; }, 1600);
+  }
+}
+
+async function copyDraft() {
+  const btn = document.getElementById('btn-copy');
+  const r = await fetch('/api/copy', { method: 'POST' });
+  if (r.ok) {
+    btn.innerText = 'Copied ✓';
+    setTimeout(() => { btn.innerText = 'Copy'; }, 1100);
+  }
+}
+
+async function copyReply() {
+  const txt = document.getElementById('pill-text').innerText;
+  try { await navigator.clipboard.writeText(txt); } catch (_) {}
+  const btn = document.getElementById('btn-copy-reply');
+  btn.innerText = 'Copied ✓';
+  setTimeout(() => { btn.innerText = 'Copy'; }, 1100);
+}
+
+async function ReplaySpeech() {
+  const txt = document.getElementById('pill-text').innerText;
+  if (!txt) return;
+  await fetch('/api/speak', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: txt })
+  });
+}
+
+async function revertDraft() {
+  await fetch('/api/revert', { method: 'POST' });
+  pollStatus();
+}
+
+async function askFromDraft() {
+  const txt = document.getElementById('pill-text').innerText.trim();
+  if (!txt) return;
+  dismissedDraftId = currentDraftId;
+  const r = await fetch('/api/converse', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: txt, speak: true })
+  });
+  if (r.ok) {
+    const d = await r.json();
+    lastSeenReply = d.text || '';
+    showReplyPill(lastSeenReply);
+  }
+}
+
+async function shutdownRen() {
+  const node = document.getElementById('node-quit');
+  const lbl = document.getElementById('lbl-quit');
+  if (!quitArmed) {
+    quitArmed = true;
+    node.classList.add('danger');
+    lbl.innerText = 'SURE?';
+    quitTimer = setTimeout(() => {
+      quitArmed = false;
+      node.classList.remove('danger');
+      lbl.innerText = 'QUIT';
+    }, 3000);
+    return;
+  }
+  clearTimeout(quitTimer);
+  await fetch('/api/shutdown', { method: 'POST' });
+  document.getElementById('micro-tag').innerText = 'OFF';
+}
+
+// Workstation Chromatic Plasma Orb + 48-bar Radial Voice Equalizer
+function renderOrb(nowMs) {
+  const W = canvas.width, H = canvas.height;
+  const cx = W * 0.5, cy = H * 0.5;
+  const t = nowMs * 0.001;
+
+  smoothLevel += (targetLevel - smoothLevel) * 0.28;
+  const active = appState === 'LISTENING' || appState === 'PROCESSING' || isSpeaking || smoothLevel > 0.04;
+  const lvl = Math.min(1.0, smoothLevel + (appState === 'PROCESSING' ? 0.25 : 0.0));
+
+  ctx.clearRect(0, 0, W, H);
+
+  const baseHue = isSpeaking ? (290 + Math.sin(t * 2.2) * 35)
+    : (appState === 'LISTENING' ? ((t * 58) % 360) : (198 + Math.sin(t * 1.1) * 24));
+  const coreR = 54 * (1.0 + Math.sin(t * 2.8) * 0.03 + lvl * 0.16);
+
+  // 1. Soft outer plasma corona (fades strictly to alpha 0 inside canvas)
+  const bloom = ctx.createRadialGradient(cx, cy, coreR * 0.35, cx, cy, 138);
+  bloom.addColorStop(0, `hsla(${baseHue}, 100%, 66%, ${active ? 0.42 + lvl * 0.32 : 0.22})`);
+  bloom.addColorStop(0.5, `hsla(${(baseHue + 95) % 360}, 100%, 58%, ${active ? 0.20 + lvl * 0.22 : 0.08})`);
+  bloom.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = bloom;
+  ctx.beginPath();
+  ctx.arc(cx, cy, 140, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 2. Concentric shockwave rings when listening or speaking
+  const ringCount = active ? 3 : 1;
+  for (let rIdx = 0; rIdx < ringCount; rIdx++) {
+    const ringR = coreR + 8 + rIdx * 16
+      + (active ? ((t * 36 + rIdx * 14) % 22) + lvl * 12 : Math.sin(t * 2) * 2);
+    ctx.beginPath();
+    ctx.arc(cx, cy, Math.min(138, ringR), 0, Math.PI * 2);
+    const ringAlpha = active ? (0.45 - rIdx * 0.11 + lvl * 0.2) : 0.22;
+    ctx.strokeStyle = `hsla(${(baseHue + rIdx * 80) % 360}, 100%, 70%, ${ringAlpha})`;
+    ctx.lineWidth = active ? (1.6 + lvl * 1.6) : 1.1;
+    ctx.stroke();
+  }
+
+  // 3. Spherical clipped plasma core (Workstation ag-plasma-orb + procedural ribbons)
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, coreR, 0, Math.PI * 2);
+  ctx.clip();
+
+  const coreBg = ctx.createRadialGradient(cx - coreR * 0.25, cy - coreR * 0.25, 4, cx, cy, coreR);
+  coreBg.addColorStop(0, `hsla(${baseHue}, 95%, 62%, 0.95)`);
+  coreBg.addColorStop(0.55, `hsla(${(baseHue + 65) % 360}, 90%, 28%, 0.95)`);
+  coreBg.addColorStop(1, 'rgba(4, 8, 22, 0.96)');
+  ctx.fillStyle = coreBg;
+  ctx.fillRect(cx - coreR, cy - coreR, coreR * 2, coreR * 2);
+
+  if (orbImg.complete && orbImg.naturalWidth > 0) {
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(t * (active ? 0.35 : 0.12));
+    ctx.globalCompositeOperation = 'screen';
+    const hue = Math.round((baseHue - 195 + 360) % 360);
+    const sat = 135 + Math.round(lvl * 85);
+    const bri = 105 + Math.round(lvl * 35);
+    ctx.filter = `hue-rotate(${hue}deg) saturate(${sat}%) brightness(${bri}%)`;
+    const drawS = coreR * 2.55;
+    ctx.drawImage(orbImg, -drawS * 0.5, -drawS * 0.5, drawS, drawS);
+    ctx.restore();
+  }
+
+  // Procedural plasma energy filaments inside the sphere
+  ctx.globalCompositeOperation = 'lighter';
+  for (let f = 0; f < 4; f++) {
+    ctx.beginPath();
+    const fHue = (baseHue + f * 58) % 360;
+    for (let x = -coreR; x <= coreR; x += 3) {
+      const y = Math.sin(x * 0.065 + t * (2.6 + f * 0.7) + f) * (coreR * (0.28 + lvl * 0.32));
+      const rot = t * 0.4 + f * 0.85;
+      const rx = cx + x * Math.cos(rot) - y * Math.sin(rot);
+      const ry = cy + x * Math.sin(rot) + y * Math.cos(rot);
+      if (x === -coreR) ctx.moveTo(rx, ry);
+      else ctx.lineTo(rx, ry);
+    }
+    ctx.strokeStyle = `hsla(${fHue}, 100%, 72%, ${0.42 + lvl * 0.38})`;
+    ctx.lineWidth = 2.6 + lvl * 2.2;
+    ctx.stroke();
+  }
+
+  // Specular 3D glass rim & crown highlight
+  ctx.globalCompositeOperation = 'source-over';
+  const gloss = ctx.createRadialGradient(cx - coreR * 0.32, cy - coreR * 0.36, 2, cx, cy, coreR);
+  gloss.addColorStop(0, 'rgba(255, 255, 255, 0.55)');
+  gloss.addColorStop(0.28, 'rgba(255, 255, 255, 0.08)');
+  gloss.addColorStop(0.85, 'rgba(0, 0, 0, 0)');
+  gloss.addColorStop(1, `hsla(${baseHue}, 100%, 76%, 0.55)`);
+  ctx.fillStyle = gloss;
+  ctx.fillRect(cx - coreR, cy - coreR, coreR * 2, coreR * 2);
+  ctx.restore();
+
+  // 4. 48-bar radial voice equalizer around the Plasma Orb
+  const bars = 48;
+  const rBase = coreR + 6;
+  for (let i = 0; i < bars; i++) {
+    const ang = (i / bars) * Math.PI * 2 + t * (active ? 0.55 : 0.18);
+    const wave = 0.25 + 0.75 * Math.abs(Math.sin(i * 0.55 + t * (active ? 7.2 : 2.0)));
+    const amp = active ? wave * (8 + lvl * 34) : wave * 3.0;
+    ctx.beginPath();
+    ctx.moveTo(cx + Math.cos(ang) * rBase, cy + Math.sin(ang) * rBase);
+    ctx.lineTo(cx + Math.cos(ang) * (rBase + amp), cy + Math.sin(ang) * (rBase + amp));
+    ctx.strokeStyle = `hsla(${(baseHue + i * 5) % 360}, 100%, 72%, ${active ? 0.88 : 0.36})`;
+    ctx.lineWidth = active ? 2.1 : 1.3;
+    ctx.stroke();
+  }
+
+  // 5. Spinning orbital arcs while synthesizing/processing
+  if (appState === 'PROCESSING') {
+    for (let k = 0; k < 2; k++) {
+      ctx.beginPath();
+      const a0 = t * (4.2 - k * 7.5) + k * Math.PI;
+      ctx.arc(cx, cy, coreR + 16 + k * 7, a0, a0 + 1.35);
+      ctx.strokeStyle = k === 0 ? '#00f5ff' : '#ffd166';
+      ctx.lineWidth = 2.6;
+      ctx.stroke();
+    }
+  }
+
+  requestAnimationFrame(renderOrb);
+}
+requestAnimationFrame(renderOrb);
+
+async function pollStatus() {
+  try {
+    const r = await fetch('/api/status');
+    if (!r.ok) return;
+    const d = await r.json();
+
+    appState = d.state || 'IDLE';
+    appMode = d.mode || 'elevate';
+    isSpeaking = Boolean(d.is_speaking);
+    targetLevel = Number(d.voice_level || 0);
+    ttsProvider = d.tts_provider || 'qwen';
+    ttsMuted = Boolean(d.tts_muted);
+
+    document.getElementById('lbl-mode').innerText = MODE_SHORT[appMode] || 'ELV';
+    document.getElementById('lbl-voice').innerText = ttsMuted ? 'OFF'
+      : (ttsProvider === 'deepgram' ? 'DGM' : (ttsProvider === 'voicestudio' ? 'VST' : 'QWN'));
+
+    const tag = document.getElementById('micro-tag');
+    tag.className = '';
+    if (appState === 'LISTENING') {
+      tag.innerText = 'LISTENING';
+      tag.classList.add('listening');
+    } else if (appState === 'PROCESSING') {
+      tag.innerText = 'THINKING';
+      tag.classList.add('listening');
+    } else if (isSpeaking) {
+      tag.innerText = 'SPEAKING';
+      tag.classList.add('speaking');
+    } else if (d.current_draft && d.current_draft.id !== dismissedDraftId) {
+      tag.innerText = 'READY';
+    } else {
+      tag.innerText = 'REN';
+    }
+
+    if (d.current_draft && d.current_draft.id !== dismissedDraftId) {
+      currentDraftId = d.current_draft.id;
+      showDraftPill(d.current_draft, d.active_target);
+    } else if (pillMode === 'draft' && !d.current_draft) {
+      hidePill();
+    }
+
+    if (d.last_reply && d.last_reply !== lastSeenReply) {
+      const wasFirst = firstPoll;
+      lastSeenReply = d.last_reply;
+      if (!wasFirst) showReplyPill(d.last_reply);
+    }
+    firstPoll = false;
+  } catch (_) {
+  } finally {
+    const fast = appState === 'LISTENING' || appState === 'PROCESSING' || isSpeaking;
+    setTimeout(pollStatus, fast ? 130 : 600);
+  }
+}
+
+syncHitRegion();
+pollStatus();
+</script>
+</body>
+</html>
+"""
+
+
 def create_app(
     controller: WrenController | None = None,
     auth_token: str | None = None,
+    window_hooks: Any = None,
 ) -> FastAPI:
     if controller is None:
         controller = WrenController()
@@ -258,771 +1226,19 @@ def create_app(
 
         return await call_next(request)
 
-    HTML_CONTENT = """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>Wren Assistant</title>
-<style>
-  :root {
-    --bg-dark: #090d16;
-    --card-bg: rgba(18, 24, 38, 0.92);
-    --surface-hover: #1e293b;
-    --text-primary: #f8fafc;
-    --text-muted: #94a3b8;
-    --primary: #38bdf8;
-    --accent: #818cf8;
-    --success: #10b981;
-    --danger: #ef4444;
-    --warning: #f59e0b;
-    --border: rgba(255, 255, 255, 0.08);
-    --border-active: rgba(56, 189, 248, 0.4);
-    --glow-primary: 0 0 24px rgba(56, 189, 248, 0.35);
-    --glow-listening: 0 0 32px rgba(239, 68, 68, 0.6);
-    --glow-success: 0 0 24px rgba(16, 185, 129, 0.4);
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    background: var(--bg-dark);
-    color: var(--text-primary);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    min-height: 100vh;
-    display: flex;
-    justify-content: center;
-    align-items: flex-start;
-    padding: 12px;
-    -webkit-font-smoothing: antialiased;
-  }
-  .app-widget {
-    width: 100%;
-    max-width: 380px;
-    background: var(--card-bg);
-    border: 1px solid var(--border);
-    border-radius: 20px;
-    padding: 16px;
-    backdrop-filter: blur(20px);
-    box-shadow: 0 16px 36px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.05);
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-  }
-  .widget-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding-bottom: 8px;
-    border-bottom: 1px solid var(--border);
-  }
-  .brand-group {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .brand-logo {
-    font-size: 1.15rem;
-    font-weight: 800;
-    letter-spacing: -0.5px;
-    background: linear-gradient(135deg, #38bdf8 0%, #818cf8 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-  }
-  .target-pill {
-    font-size: 0.72rem;
-    font-weight: 500;
-    padding: 3px 8px;
-    border-radius: 9999px;
-    background: rgba(56, 189, 248, 0.1);
-    color: var(--primary);
-    border: 1px solid rgba(56, 189, 248, 0.25);
-    max-width: 140px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .mode-bar {
-    display: flex;
-    background: rgba(15, 23, 42, 0.8);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 3px;
-    gap: 2px;
-  }
-  .mode-btn {
-    flex: 1;
-    background: transparent;
-    color: var(--text-muted);
-    border: none;
-    border-radius: 9px;
-    padding: 6px 4px;
-    font-size: 0.75rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 4px;
-  }
-  .mode-btn:hover {
-    color: var(--text-primary);
-  }
-  .mode-btn.active {
-    background: rgba(56, 189, 248, 0.18);
-    color: var(--primary);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
-  }
-  .orb-hero {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 16px 0;
-    cursor: pointer;
-    user-select: none;
-  }
-  .orb-wrapper {
-    position: relative;
-    width: 90px;
-    height: 90px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .orb-elem {
-    width: 72px;
-    height: 72px;
-    border-radius: 50%;
-    background: radial-gradient(circle at 35% 35%, #38bdf8 0%, #1e3a8a 70%, #0f172a 100%);
-    box-shadow: 0 0 20px rgba(56, 189, 248, 0.25);
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    position: relative;
-    z-index: 2;
-  }
-  .orb-elem.LISTENING {
-    background: radial-gradient(circle at 35% 35%, #f87171 0%, #b91c1c 70%, #450a0a 100%);
-    box-shadow: var(--glow-listening);
-    transform: scale(1.08);
-    animation: orb-breathe 1.6s ease-in-out infinite;
-  }
-  .orb-elem.PROCESSING {
-    background: radial-gradient(circle at 35% 35%, #fbbf24 0%, #b45309 70%, #451a03 100%);
-    box-shadow: 0 0 24px rgba(251, 191, 36, 0.5);
-    animation: orb-spin 2s linear infinite;
-  }
-  .orb-elem.DRAFT_READY {
-    background: radial-gradient(circle at 35% 35%, #34d399 0%, #047857 70%, #064e3b 100%);
-    box-shadow: var(--glow-success);
-  }
-  .orb-elem.CLIPBOARD_WRITTEN {
-    background: radial-gradient(circle at 35% 35%, #818cf8 0%, #4338ca 70%, #1e1b4b 100%);
-    box-shadow: 0 0 24px rgba(129, 140, 248, 0.4);
-  }
-  @keyframes orb-breathe {
-    0%, 100% { transform: scale(1.04); }
-    50% { transform: scale(1.14); }
-  }
-  @keyframes orb-spin {
-    0% { transform: rotate(0deg); }
-    100% { transform: rotate(360deg); }
-  }
-  .waveform {
-    display: none;
-    align-items: center;
-    gap: 3px;
-    height: 18px;
-    margin-top: 8px;
-  }
-  .waveform.active {
-    display: flex;
-  }
-  .wave-bar {
-    width: 3px;
-    background: var(--danger);
-    border-radius: 2px;
-    animation: wave-motion 1s ease-in-out infinite alternate;
-  }
-  .wave-bar:nth-child(1) { height: 6px; animation-delay: 0.1s; }
-  .wave-bar:nth-child(2) { height: 16px; animation-delay: 0.3s; }
-  .wave-bar:nth-child(3) { height: 22px; animation-delay: 0.15s; }
-  .wave-bar:nth-child(4) { height: 14px; animation-delay: 0.4s; }
-  .wave-bar:nth-child(5) { height: 8px; animation-delay: 0.2s; }
-  @keyframes wave-motion {
-    0% { height: 4px; }
-    100% { height: 22px; }
-  }
-  .orb-caption {
-    font-size: 0.78rem;
-    color: var(--text-muted);
-    font-weight: 500;
-    margin-top: 6px;
-  }
-  .draft-card {
-    background: rgba(15, 23, 42, 0.7);
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    padding: 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-  .draft-card-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-  }
-  .revision-pill {
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid var(--border);
-    padding: 1px 6px;
-    border-radius: 9999px;
-    font-size: 0.7rem;
-    color: var(--text-primary);
-  }
-  .draft-box {
-    background: rgba(9, 13, 22, 0.8);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 12px;
-    font-size: 0.88rem;
-    line-height: 1.45;
-    min-height: 64px;
-    max-height: 200px;
-    overflow-y: auto;
-    white-space: pre-wrap;
-    word-break: break-word;
-    color: var(--text-primary);
-  }
-  .diff-box {
-    background: #090d16;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 8px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.72rem;
-    color: var(--text-muted);
-    max-height: 80px;
-    overflow-y: auto;
-    white-space: pre-wrap;
-    display: none;
-  }
-  .action-row {
-    display: flex;
-    gap: 6px;
-  }
-  .btn {
-    flex: 1;
-    background: var(--surface-hover);
-    color: var(--text-primary);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 7px 10px;
-    font-size: 0.78rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.15s ease;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 4px;
-  }
-  .btn:hover:not(:disabled) {
-    background: #334155;
-    border-color: rgba(255, 255, 255, 0.15);
-  }
-  .btn:disabled {
-    opacity: 0.35;
-    cursor: not-allowed;
-  }
-  .btn-success {
-    background: var(--success);
-    color: #064e3b;
-    border: none;
-  }
-  .btn-success:hover:not(:disabled) {
-    background: #34d399;
-  }
-  .btn-primary {
-    background: var(--primary);
-    color: #0c4a6e;
-    border: none;
-  }
-  .btn-primary:hover:not(:disabled) {
-    background: #7dd3fc;
-  }
-  .revise-row {
-    display: flex;
-    gap: 6px;
-    margin-top: 2px;
-  }
-  .revise-row input {
-    flex: 1;
-    background: rgba(9, 13, 22, 0.8);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 7px 10px;
-    font-size: 0.78rem;
-    color: var(--text-primary);
-  }
-  .revise-row input:focus {
-    outline: none;
-    border-color: var(--primary);
-  }
-  .collapsible-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-size: 0.74rem;
-    color: var(--text-muted);
-    cursor: pointer;
-    padding: 4px 2px;
-  }
-  .collapsible-header:hover { color: var(--text-primary); }
-  .collapsible-body {
-    display: none;
-    flex-direction: column;
-    gap: 8px;
-    padding-top: 6px;
-  }
-  .collapsible-body.open { display: flex; }
-  .connect-card {
-    background: rgba(9, 13, 22, 0.6);
-    border: 1px dashed var(--border);
-    border-radius: 10px;
-    padding: 8px;
-    font-size: 0.72rem;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .connect-item {
-    display: flex;
-    justify-content: space-between;
-    color: var(--text-muted);
-  }
-  .connect-val {
-    color: var(--primary);
-    font-family: monospace;
-    font-weight: 600;
-  }
-  .chips-container {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-  }
-  .chip {
-    background: rgba(56, 189, 248, 0.1);
-    border: 1px solid rgba(56, 189, 248, 0.3);
-    border-radius: 9999px;
-    padding: 2px 6px;
-    font-size: 0.68rem;
-    color: var(--primary);
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-</style>
-</head>
-<body>
-<div class="app-widget">
-  <div class="widget-header">
-    <div class="brand-group">
-      <div class="brand-logo">Wren</div>
-      <div class="target-pill" id="target-pill">🎯 Searching target...</div>
-    </div>
-    <div style="display:flex; align-items:center; gap:8px;">
-      <div id="status-pill" style="font-size:0.72rem; color:var(--text-muted);">IDLE</div>
-      <button id="btn-quit" title="Quit Ren" onclick="shutdownRen()"
-        style="background:none; border:none; color:var(--text-muted); font-size:0.9rem;
-               cursor:pointer; padding:2px 4px;">⏻</button>
-    </div>
-  </div>
-
-  <div class="mode-bar">
-    <button class="mode-btn active" id="btn-mode-elevate" onclick="switchMode('elevate')">✨ Elevate</button>
-    <button class="mode-btn" id="btn-mode-agent" onclick="switchMode('agent')">🤖 Agent</button>
-    <button class="mode-btn" id="btn-mode-brainstorm" onclick="switchMode('brainstorm')">
-      💡 Brainstorm
-    </button>
-  </div>
-
-  <div class="orb-hero" onclick="handleOrbClick()">
-    <div class="orb-wrapper">
-      <div class="orb-elem IDLE" id="orb-elem"></div>
-    </div>
-    <div class="waveform" id="waveform">
-      <div class="wave-bar"></div>
-      <div class="wave-bar"></div>
-      <div class="wave-bar"></div>
-      <div class="wave-bar"></div>
-      <div class="wave-bar"></div>
-    </div>
-    <div class="orb-caption" id="orb-caption">Tap or [Space] to Speak</div>
-  </div>
-
-  <div class="draft-card">
-    <div class="draft-card-header">
-      <span id="draft-header-title">Draft Preview</span>
-      <span class="revision-pill" id="rev-pill">v0</span>
-    </div>
-    <div class="draft-box" id="draft-box">Speak or brainstorm to generate a draft.</div>
-    <div class="diff-box" id="diff-box"></div>
-    <div class="action-row">
-      <button class="btn btn-success" id="btn-paste" onclick="pasteDraft()" disabled>🎯 Paste</button>
-      <button class="btn" id="btn-copy" onclick="copyDraft()" disabled>📋 Copy</button>
-      <button class="btn" id="btn-revert" onclick="revertDraft()" disabled>🔄 Revert</button>
-    </div>
-    <div class="revise-row">
-      <input type="text" id="revise-input" placeholder="Refine or ask Wren..."
-        onkeydown="if(event.key==='Enter') submitRevise()">
-      <button class="btn btn-primary" style="flex:0 0 54px;" onclick="submitRevise()">Send</button>
-    </div>
-  </div>
-
-  <div class="collapsible">
-    <div class="collapsible-header" onclick="toggleTray('files-body')">
-      <span>📎 Attached Context (<span id="file-count">0</span>)</span>
-      <span id="files-caret">▼</span>
-    </div>
-    <div class="collapsible-body" id="files-body">
-      <div class="chips-container" id="chips-container"></div>
-      <div style="display:flex; gap:4px;">
-        <input type="text" id="file-search-input" placeholder="Search /Dev or Drive..."
-          style="flex:1; font-size:0.72rem; padding:4px 8px; background:#090d16; color:#fff;"
-          onkeydown="if(event.key==='Enter') doSearchFiles()">
-        <button class="btn" style="flex:0 0 44px; padding:4px 6px;" onclick="doSearchFiles()">Find</button>
-      </div>
-      <div id="file-search-results"
-        style="max-height:90px; overflow-y:auto; font-size:0.7rem; color:var(--text-muted);"></div>
-    </div>
-  </div>
-
-  <div class="collapsible">
-    <div class="collapsible-header" onclick="toggleTray('connect-body')">
-      <span>📱 Companion Bridge</span>
-      <span id="connect-caret">▼</span>
-    </div>
-    <div class="collapsible-body" id="connect-body">
-      <div class="connect-card">
-        <div class="connect-item"><span>LAN IP:</span>
-          <span class="connect-val" id="lan-ip">not detected</span></div>
-        <div class="connect-item"><span>Tailscale IP:</span>
-          <span class="connect-val" id="tailscale-ip">not detected</span></div>
-        <div class="connect-item"><span>WebSocket:</span><span class="connect-val">ws://.../ws/connect</span></div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<script>
-const urlParams = new URLSearchParams(window.location.search);
-const authToken = urlParams.get('token') || '';
-
-if (authToken) {
-  const originalFetch = window.fetch;
-  window.fetch = function(url, options = {}) {
-    const opts = { ...options };
-    opts.headers = new Headers(opts.headers || {});
-    if (!opts.headers.has('Authorization')) {
-      opts.headers.set('Authorization', `Bearer ${authToken}`);
-    }
-    return originalFetch(url, opts);
-  };
-}
-
-let currentState = "IDLE";
-let currentMode = "elevate";
-let isListening = false;
-let lastSpokenReply = '';
-let firstStatusPoll = true;
-let prevState = 'IDLE';
-let quitArmed = false;
-let quitArmTimer = null;
-
-async function shutdownRen() {
-  if (!quitArmed) {
-    quitArmed = true;
-    const btn = document.getElementById('btn-quit');
-    btn.innerText = 'sure?';
-    btn.style.color = 'var(--danger)';
-    quitArmTimer = setTimeout(() => {
-      quitArmed = false;
-      btn.innerText = '⏻';
-      btn.style.color = 'var(--text-muted)';
-    }, 3000);
-    return;
-  }
-  clearTimeout(quitArmTimer);
-  await fetch('/api/shutdown', { method: 'POST' });
-  document.getElementById('orb-caption').innerText = 'Ren stopped';
-}
-
-async function speak(text) {
-  try {
-    await fetch('/api/speak', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: text })
-    });
-  } catch (err) {
-    console.error('speak failed', err);
-  }
-}
-
-function toggleTray(id) {
-  const el = document.getElementById(id);
-  el.classList.toggle('open');
-}
-
-async function switchMode(mode) {
-  try {
-    const res = await fetch('/api/mode', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: mode })
-    });
-    const data = await res.json();
-    updateModeUI(data.mode);
-  } catch (err) {
-    console.error("Failed to switch mode", err);
-  }
-}
-
-function updateModeUI(mode) {
-  currentMode = mode;
-  document.querySelectorAll('.mode-btn').forEach(btn => btn.classList.remove('active'));
-  const activeBtn = document.getElementById(`btn-mode-${mode}`);
-  if (activeBtn) activeBtn.classList.add('active');
-
-  const headers = {
-    'elevate': 'Draft Preview (✨ Elevate)',
-    'agent': 'Agent Directive (🤖 5-Gate)',
-    'brainstorm': 'Brainstorm Brief (💡 Explore)'
-  };
-  document.getElementById('draft-header-title').innerText = headers[mode] || 'Draft Preview';
-}
-
-async function handleOrbClick() {
-  const readyStates = ["IDLE", "DRAFT_READY", "CLIPBOARD_WRITTEN"];
-  if (currentState === "LISTENING") {
-    await stopListening();
-  } else if (readyStates.includes(currentState)) {
-    await startListening();
-  }
-}
-
-async function startListening() {
-  try {
-    await fetch('/api/listen/start', { method: 'POST' });
-    fetchStatus();
-  } catch (err) {
-    console.error("Error starting listen", err);
-  }
-}
-
-async function stopListening() {
-  try {
-    await fetch('/api/listen/stop', { method: 'POST' });
-    fetchStatus();
-  } catch (err) {
-    console.error("Error stopping listen", err);
-  }
-}
-
-async function pasteDraft() {
-  try {
-    await fetch('/api/paste', { method: 'POST' });
-    fetchStatus();
-  } catch (err) {
-    console.error("Error pasting", err);
-  }
-}
-
-async function copyDraft() {
-  try {
-    await fetch('/api/copy', { method: 'POST' });
-    fetchStatus();
-  } catch (err) {
-    console.error("Error copying", err);
-  }
-}
-
-async function revertDraft() {
-  try {
-    await fetch('/api/revert', { method: 'POST' });
-    fetchStatus();
-  } catch (err) {
-    console.error("Error reverting", err);
-  }
-}
-
-async function submitRevise() {
-  const input = document.getElementById('revise-input');
-  const val = input.value.trim();
-  if (!val) return;
-  try {
-    await fetch('/api/revise', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ instruction: val })
-    });
-    input.value = '';
-    fetchStatus();
-  } catch (err) {
-    console.error("Error revising", err);
-  }
-}
-
-async function doSearchFiles() {
-  const q = document.getElementById('file-search-input').value.trim();
-  const res = await fetch(`/api/files/search?q=${encodeURIComponent(q)}`);
-  const data = await res.json();
-  const container = document.getElementById('file-search-results');
-  container.innerHTML = '';
-  data.results.slice(0, 5).forEach(f => {
-    const item = document.createElement('div');
-    item.style.cursor = 'pointer';
-    item.style.padding = '3px 4px';
-    item.style.borderRadius = '4px';
-    item.style.background = '#1e293b';
-    const tag = `<span style="opacity:0.6; font-size:0.65rem;">(${f.source})</span>`;
-    item.innerHTML = `<span>${f.name}</span> ` + tag;
-    item.onclick = () => attachContextFile(f.path, f.name);
-    container.appendChild(item);
-  });
-}
-
-async function attachContextFile(path, name) {
-  await fetch('/api/files/attach', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ file_path: path })
-  });
-  const chips = document.getElementById('chips-container');
-  const chip = document.createElement('div');
-  chip.className = 'chip';
-  chip.innerText = name;
-  chips.appendChild(chip);
-  const count = chips.querySelectorAll('.chip').length;
-  document.getElementById('file-count').innerText = count;
-}
-
-async function fetchStatus() {
-  try {
-    const res = await fetch('/api/status');
-    const data = await res.json();
-    currentState = data.state;
-    if (data.mode) {
-      updateModeUI(data.mode);
-    }
-
-    const orb = document.getElementById('orb-elem');
-    orb.className = 'orb-elem ' + data.state;
-    document.getElementById('status-pill').innerText = data.state;
-
-    const waveform = document.getElementById('waveform');
-    const caption = document.getElementById('orb-caption');
-    if (data.state === 'LISTENING') {
-      waveform.classList.add('active');
-      caption.innerText = 'Listening… tap again or release hotkey to finish';
-    } else if (data.state === 'PROCESSING') {
-      waveform.classList.remove('active');
-      caption.innerText = 'Synthesizing…';
-    } else if (data.state === 'DRAFT_READY') {
-      waveform.classList.remove('active');
-      caption.innerText = 'Draft ready — Paste writes to your last app';
-    } else {
-      waveform.classList.remove('active');
-      caption.innerText = 'Tap orb, [Space], or hold Ctrl+Alt+Space';
-    }
-
-    if (data.last_reply && data.last_reply !== lastSpokenReply) {
-      const isFirst = firstStatusPoll;
-      firstStatusPoll = false;
-      if (!isFirst) speak(data.last_reply);
-      lastSpokenReply = data.last_reply;
-    }
-
-    if (data.state === 'DRAFT_READY' && prevState !== 'DRAFT_READY') {
-      speak('Draft ready');
-    }
-    prevState = data.state;
-
-    if (data.active_target) {
-      document.getElementById('target-pill').innerText = '🎯 ' + data.active_target.wm_class;
-    } else {
-      document.getElementById('target-pill').innerText = '🎯 No Target';
-    }
-
-    const draftBox = document.getElementById('draft-box');
-    const btnPaste = document.getElementById('btn-paste');
-    const btnCopy = document.getElementById('btn-copy');
-    const btnRevert = document.getElementById('btn-revert');
-
-    if (data.current_draft) {
-      draftBox.innerText = data.current_draft.text;
-      document.getElementById('rev-pill').innerText = 'v' + data.current_draft.revision;
-      btnPaste.disabled = false;
-      btnCopy.disabled = false;
-      btnRevert.disabled = false;
-    } else {
-      draftBox.innerText = 'Speak or brainstorm to generate a draft.';
-      btnPaste.disabled = true;
-      btnCopy.disabled = true;
-      btnRevert.disabled = true;
-    }
-
-    if (data.last_diff) {
-      const diffBox = document.getElementById('diff-box');
-      diffBox.innerText = data.last_diff;
-      diffBox.style.display = 'block';
-    }
-  } catch (err) {
-    console.error("Status fetch error", err);
-  }
-}
-
-async function fetchConnect() {
-  try {
-    const res = await fetch('/api/connect');
-    const data = await res.json();
-    if (data.lan_ip) {
-      document.getElementById('lan-ip').innerText = `${data.lan_ip}:${data.port}`;
-    }
-    if (data.tailscale_ip) {
-      document.getElementById('tailscale-ip').innerText = `${data.tailscale_ip}:${data.port}`;
-    }
-  } catch (err) {
-    console.error("Connect fetch error", err);
-  }
-}
-
-// Push to talk shortcut (Spacebar)
-window.addEventListener('keydown', (e) => {
-  // Ignore Space while a modifier is held — Ctrl+Alt+Space is the global
-  // hold-to-talk hotkey and must not also toggle the orb.
-  if (e.code === 'Space' && !e.ctrlKey && !e.altKey && !e.metaKey &&
-      e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
-    e.preventDefault();
-    handleOrbClick();
-  }
-});
-
-setInterval(fetchStatus, 1000);
-fetchStatus();
-fetchConnect();
-</script>
-</body>
-</html>
-"""
-
     @app.get("/", response_class=HTMLResponse)
     def index():
-        return HTML_CONTENT
+        return FLOATING_PLASMA_ORB_HTML
+
+    @app.get("/api/orb-texture")
+    def get_orb_texture():
+        if WORKSTATION_ORB_JPG.is_file():
+            return Response(
+                content=WORKSTATION_ORB_JPG.read_bytes(),
+                media_type="image/jpeg",
+                headers={"Cache-Control": "public, max-age=3600"},
+            )
+        return Response(status_code=204)
 
     @app.get("/api/connect")
     def get_connect_info():
@@ -1061,6 +1277,49 @@ fetchConnect();
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
+    @app.get("/api/voice/config")
+    def get_voice_config():
+        return {
+            "provider": controller.tts.provider,
+            "muted": controller.tts.muted,
+            "last_provider_used": controller.tts.last_provider_used,
+        }
+
+    @app.post("/api/voice/config")
+    def set_voice_config(req: VoiceConfigRequest):
+        try:
+            if req.provider is not None:
+                controller.tts.set_provider(req.provider)
+            if req.muted is not None:
+                controller.tts.muted = bool(req.muted)
+                if controller.tts.muted:
+                    controller.tts.stop()
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {
+            "status": "ok",
+            "provider": controller.tts.provider,
+            "muted": controller.tts.muted,
+        }
+
+    @app.post("/api/ui/hitregion")
+    def set_ui_hitregion(req: HitRegionRequest):
+        if window_hooks is not None and hasattr(window_hooks, "set_hit_region"):
+            window_hooks.set_hit_region(req.mode)
+        return {"status": "ok", "mode": req.mode}
+
+    @app.post("/api/ui/move")
+    def move_ui_window(req: WindowMoveRequest):
+        if window_hooks is not None and hasattr(window_hooks, "move_by"):
+            window_hooks.move_by(req.dx, req.dy)
+        return {"status": "ok"}
+
+    @app.post("/api/ui/focus")
+    def focus_ui_window(req: WindowFocusRequest):
+        if window_hooks is not None and hasattr(window_hooks, "set_focusable"):
+            window_hooks.set_focusable(req.accept)
+        return {"status": "ok", "accept": req.accept}
+
     @app.get("/api/status")
     def get_status():
         target_dict = None
@@ -1085,8 +1344,13 @@ fetchConnect();
             "state": controller.state.value,
             "mode": controller.mode,
             "is_recording": controller.audio.is_recording,
+            "is_speaking": controller.is_speaking,
+            "voice_level": round(controller.voice_level, 3),
+            "tts_provider": controller.tts.provider,
+            "tts_muted": controller.tts.muted,
             "current_draft": draft_dict,
             "last_diff": controller.last_diff,
+            "last_transcript": controller.last_transcript,
             "active_target": target_dict,
             "last_reply": controller.last_reply,
             "phone_screen": {
@@ -1097,10 +1361,11 @@ fetchConnect();
         }
 
     @app.post("/api/listen/start")
-    def start_listen():
+    def start_listen(req: ListenStartRequest | None = None):
+        intent = req.intent if req is not None else "auto"
         try:
-            controller.start_listening()
-            return {"status": "listening"}
+            controller.start_listening(intent=intent)
+            return {"status": "listening", "intent": intent}
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -1108,10 +1373,16 @@ fetchConnect();
     def stop_listen():
         try:
             draft = controller.stop_listening()
+            if draft is not None:
+                return {
+                    "status": "draft_ready",
+                    "revision": draft.revision,
+                    "text": draft.text,
+                }
             return {
-                "status": "draft_ready",
-                "revision": draft.revision,
-                "text": draft.text,
+                "status": "idle",
+                "reply": controller.last_reply,
+                "text": controller.last_reply,
             }
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
@@ -1156,6 +1427,12 @@ fetchConnect();
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
+    @app.post("/api/dismiss")
+    def dismiss_draft():
+        controller.buffer.clear()
+        controller.cancel()
+        return {"status": "dismissed"}
+
     @app.post("/api/cancel")
     def cancel():
         controller.cancel()
@@ -1163,24 +1440,16 @@ fetchConnect();
 
     @app.post("/api/speak")
     def speak(req: SpeakRequest):
-        """Speak text aloud through the workstation's default audio output (espeak-ng)."""
+        """Speak text aloud via Qwen primary -> Deepgram Aura fallback."""
         text = req.text.strip()[:2000]
         if not text:
             raise HTTPException(status_code=400, detail="text is required")
-        try:
-            subprocess.Popen(
-                ["espeak-ng", "-v", "en", "-s", "170", text],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except FileNotFoundError:
-            raise HTTPException(status_code=503, detail="espeak-ng is not installed") from None
-        return {"status": "speaking"}
+        controller.speak_async(text, provider=req.provider)
+        return {"status": "speaking", "provider": req.provider or controller.tts.provider}
 
     @app.post("/api/shutdown")
     def shutdown():
-        """Stop the Ren service cleanly. Under systemd this stops wren.service;
-        elsewhere it exits the process after the response flushes."""
+        """Stop the Ren service cleanly."""
         def _stop():
             time.sleep(0.6)
             try:
@@ -1275,6 +1544,8 @@ fetchConnect();
     def converse(req: ConverseRequest):
         try:
             reply = controller.converse(req.text)
+            if req.speak:
+                controller.speak_async(reply)
             return {"type": "assistant_message", "text": reply, "requires_confirm": True}
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
@@ -1325,7 +1596,7 @@ fetchConnect();
 
     @app.websocket("/ws/connect")
     async def websocket_connect(websocket: WebSocket):
-        """Bidirectional WebSocket for mobile companion streaming and real-time synchronization."""
+        """Bidirectional WebSocket for mobile companion streaming and synchronization."""
         client_host = websocket.client.host if websocket.client else None
         request_host = websocket.url.hostname
 
@@ -1343,7 +1614,6 @@ fetchConnect();
                 return
 
         await websocket.accept()
-        # Send initial status handshake
         await websocket.send_json({
             "type": "handshake",
             "state": controller.state.value,
@@ -1369,25 +1639,32 @@ fetchConnect();
                     await websocket.send_json({"type": "mode_updated", "mode": controller.mode})
 
                 elif action == "start_listen":
-                    controller.start_listening()
+                    controller.start_listening(intent=msg.get("intent", "auto"))
                     await websocket.send_json({"type": "state_changed", "state": controller.state.value})
 
                 elif action == "stop_listen":
                     draft = controller.stop_listening()
-                    await websocket.send_json({
-                        "type": "draft_ready",
-                        "draft": {
-                            "id": draft.id,
-                            "text": draft.text,
-                            "revision": draft.revision,
-                        },
-                    })
-                    await websocket.send_json({
-                        "type": "paste_preview",
-                        "requires_confirm": True,
-                        "raw": draft.text,
-                        "draft": {"id": draft.id, "text": draft.text, "revision": draft.revision},
-                    })
+                    if draft is not None:
+                        await websocket.send_json({
+                            "type": "draft_ready",
+                            "draft": {
+                                "id": draft.id,
+                                "text": draft.text,
+                                "revision": draft.revision,
+                            },
+                        })
+                        await websocket.send_json({
+                            "type": "paste_preview",
+                            "requires_confirm": True,
+                            "raw": draft.text,
+                            "draft": {"id": draft.id, "text": draft.text, "revision": draft.revision},
+                        })
+                    else:
+                        await websocket.send_json({
+                            "type": "assistant_message",
+                            "text": controller.last_reply,
+                            "requires_confirm": True,
+                        })
 
                 elif action == "elevate_text":
                     raw = msg.get("text", "")
@@ -1416,7 +1693,9 @@ fetchConnect();
                 elif action == "dictate":
                     if msg.get("screen"):
                         controller.note_phone_screen(msg.get("package", ""), msg.get("screen", ""))
-                    draft = controller.accept_dictation(msg.get("text", ""), source=msg.get("source", "android"))
+                    draft = controller.accept_dictation(
+                        msg.get("text", ""), source=msg.get("source", "android")
+                    )
                     await websocket.send_json({
                         "type": "paste_preview",
                         "requires_confirm": True,
@@ -1432,6 +1711,8 @@ fetchConnect();
                     if msg.get("screen"):
                         controller.note_phone_screen(msg.get("package", ""), msg.get("screen", ""))
                     reply = controller.converse(msg.get("text", ""))
+                    if msg.get("speak"):
+                        controller.speak_async(reply)
                     await websocket.send_json({
                         "type": "assistant_message",
                         "text": reply,

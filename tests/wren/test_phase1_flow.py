@@ -138,3 +138,36 @@ def test_paste_proceeds_when_ren_widget_holds_focus(mock_target):
         assert receipt.outcome == "done"
         mock_paste.assert_called_once_with(mock_target)
         assert controller.state == WrenState.IDLE
+
+
+def test_consecutive_dictations_from_draft_ready_and_clipboard_written(mock_target):
+    """Regression for 16:34:19 journalctl crash: starting a second dictation
+    while in DRAFT_READY or CLIPBOARD_WRITTEN or ERROR must succeed."""
+    controller = WrenController(stt_provider="mock", model="auto")
+    with patch.object(controller.targets, "get_active_target", return_value=mock_target), \
+         patch.object(controller.audio, "start"), \
+         patch.object(controller.audio, "stop", return_value=b"RIFF\x00\x00\x00\x00WAVE"):
+        controller.start_listening()
+        controller.stop_listening()
+        assert controller.state == WrenState.DRAFT_READY
+
+        # Second dictation directly from DRAFT_READY must not raise StateTransitionError
+        controller.start_listening()
+        assert controller.state == WrenState.LISTENING
+        controller.stop_listening()
+        assert controller.state == WrenState.DRAFT_READY
+
+        # Dictation from CLIPBOARD_WRITTEN must also work
+        with patch.object(controller.clipboard, "write", return_value="h"):
+            controller.copy_current_draft()
+            assert controller.state == WrenState.CLIPBOARD_WRITTEN
+        controller.start_listening()
+        assert controller.state == WrenState.LISTENING
+        controller.cancel()
+
+        # Dictation recovery from ERROR must also work
+        controller.state_machine.error("transient")
+        assert controller.state == WrenState.ERROR
+        controller.start_listening()
+        assert controller.state == WrenState.LISTENING
+        controller.cancel()

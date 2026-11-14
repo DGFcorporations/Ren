@@ -1,5 +1,6 @@
 """Wren LLM prompt cleaner, intent-preserving elevation, and diff engine."""
 import difflib
+import os
 import re
 from dataclasses import dataclass
 
@@ -47,11 +48,12 @@ Be sharp, insightful, and concise:
 Keep it punchy, conversational, and grounded in DGF standards.
 """
 
-SYSTEM_TALK_PROMPT = """You are Ren, the local workstation companion speaking through the floating orb.
-Reply in plain spoken sentences the user can hear. No markdown fences.
-Stay under 80 words unless the user asked for code or a list.
-Never claim you pasted, clicked, or saved a file. Those actions wait for a separate confirmation.
-Use the screen note only as context. Do not dump it back unless asked.
+SYSTEM_TALK_PROMPT = """You are Ren, Chandler's floating plasma-orb AI companion on his workstation.
+Speak in warm, sharp, natural spoken English — 1 to 3 concise sentences unless asked for detail.
+Name the user's topic explicitly in your opening clause so spoken replies stay clear without a screen.
+No markdown code fences, no bullet walls, no raw file paths read aloud.
+Never claim you pasted, clicked, or saved a file — consequential actions require explicit confirmation.
+Use the active window / screen note silently as context so your answers are grounded in what he is looking at.
 """
 
 
@@ -71,13 +73,42 @@ class PromptElevator:
 
     def __init__(
         self,
-        base_url: str = "http://127.0.0.1:18880/v1",
+        base_url: str | None = None,
         model: str = "auto",
         timeout: float = 15.0,
     ):
-        self.base_url = base_url.rstrip("/")
+        primary = base_url or os.environ.get("WREN_LLM_BASE_URL", "http://127.0.0.1:18880/v1")
+        self.base_url = primary.rstrip("/")
+        self.fallback_base_url = os.environ.get(
+            "FREELLMAPI_BASE_URL", "http://127.0.0.1:31415/v1"
+        ).rstrip("/")
         self.model = model
         self.timeout = timeout
+
+    def _chat_completion(self, payload: dict) -> str | None:
+        """Try primary dgf-llm-router (:18880) then FreeLLMAPI desktop (:31415)."""
+        api_key = (
+            os.environ.get("WREN_LLM_API_KEY")
+            or os.environ.get("UNIFIED_API_KEY")
+            or os.environ.get("FREEM_API_KEY")
+            or ""
+        )
+        endpoints = [(self.base_url, "")]
+        if self.fallback_base_url != self.base_url and api_key:
+            endpoints.append((self.fallback_base_url, api_key))
+
+        for url, key in endpoints:
+            headers = {"Authorization": f"Bearer {key}"} if key else {}
+            try:
+                with httpx.Client(timeout=self.timeout) as client:
+                    res = client.post(f"{url}/chat/completions", json=payload, headers=headers)
+                    if res.status_code == 200:
+                        content = res.json()["choices"][0]["message"]["content"]
+                        if content:
+                            return content.strip()
+            except Exception:
+                continue
+        return None
 
     @staticmethod
     def compute_diff(raw: str, elevated: str) -> str:
@@ -149,32 +180,21 @@ class PromptElevator:
             "temperature": temperature,
         }
 
-        try:
-            with httpx.Client(timeout=self.timeout) as client:
-                res = client.post(
-                    f"{self.base_url}/chat/completions",
-                    json=payload,
-                )
-                if res.status_code == 200:
-                    data = res.json()
-                    elevated_text = data["choices"][0]["message"]["content"].strip()
-                    # Strip wrapping quotes if LLM added them
-                    if elevated_text.startswith('"') and elevated_text.endswith('"'):
-                        elevated_text = elevated_text[1:-1].strip()
-
-                    diff = self.compute_diff(raw_text, elevated_text)
-                    intent_ok = self.verify_intent(raw_text, elevated_text)
-                    return ElevationResult(
-                        raw_text=raw_text,
-                        elevated_text=elevated_text,
-                        diff=diff,
-                        intent_preserved=intent_ok,
-                        model=self.model,
-                        fallback_used=False,
-                        mode=mode,
-                    )
-        except Exception:
-            pass
+        elevated_text = self._chat_completion(payload)
+        if elevated_text:
+            if elevated_text.startswith('"') and elevated_text.endswith('"'):
+                elevated_text = elevated_text[1:-1].strip()
+            diff = self.compute_diff(raw_text, elevated_text)
+            intent_ok = self.verify_intent(raw_text, elevated_text)
+            return ElevationResult(
+                raw_text=raw_text,
+                elevated_text=elevated_text,
+                diff=diff,
+                intent_preserved=intent_ok,
+                model=self.model,
+                fallback_used=False,
+                mode=mode,
+            )
 
         # Fallback path if LLM is unavailable
         fallback_text = raw_text.strip()
@@ -210,23 +230,21 @@ class PromptElevator:
                 messages.append({"role": role, "content": str(content)[:2000]})
         messages.append({"role": "user", "content": user_text})
         payload = {"model": self.model, "messages": messages, "temperature": 0.4}
-        try:
-            with httpx.Client(timeout=self.timeout) as client:
-                res = client.post(f"{self.base_url}/chat/completions", json=payload)
-                if res.status_code == 200:
-                    reply = res.json()["choices"][0]["message"]["content"].strip()
-                    return ElevationResult(
-                        raw_text=user_text,
-                        elevated_text=reply,
-                        diff="",
-                        intent_preserved=True,
-                        model=self.model,
-                        fallback_used=False,
-                        mode="talk",
-                    )
-        except Exception:
-            pass
-        reply = f"I heard you. The workstation model is offline, so here is the local reply: {user_text.strip()}"
+        reply = self._chat_completion(payload)
+        if reply:
+            return ElevationResult(
+                raw_text=user_text,
+                elevated_text=reply,
+                diff="",
+                intent_preserved=True,
+                model=self.model,
+                fallback_used=False,
+                mode="talk",
+            )
+        reply = (
+            "I heard you. The workstation model is offline, "
+            f"so here is the local reply: {user_text.strip()}"
+        )
         return ElevationResult(
             raw_text=user_text,
             elevated_text=reply,

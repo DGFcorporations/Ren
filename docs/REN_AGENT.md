@@ -16,14 +16,32 @@ Clients that are not on this computer need a bearer token. Ren does not ship a p
 
 Set `WREN_WORKSPACE` to the folder Ren is allowed to edit. If it is unset, Ren uses the directory you started it from.
 
-Live replies use a local OpenAI-compatible model at `http://127.0.0.1:18880/v1` when one is running. If it is not, Ren still answers with a local fallback sentence and still previews dictation.
+Live replies use a local OpenAI-compatible model at `http://127.0.0.1:18880/v1` when one is running, with the FreeLLMAPI desktop gateway at `http://127.0.0.1:31415/v1` as fallback. If neither is up, Ren still answers with a local fallback sentence and still previews dictation.
 
-### Desktop widget controls
+Speech-to-text prefers the workstation bridge (`http://127.0.0.1:8787/v1/audio/transcriptions` — cloud Whisper/Nova AST) and falls back to local Faster-Whisper. Spoken replies prefer the Qwen/QUIN voice (`WREN_TTS_PROVIDER=qwen`, ~4s budget) and fall back to Deepgram Aura through the same bridge, then VoiceStudio `:3900`, then `espeak-ng`. `POST /api/voice/config` and the orb's VOICE node switch providers or mute output. No audio is written to disk — everything stays in memory.
 
-- **Hold-to-talk:** hold `Ctrl+Alt+Space` to dictate, release to process. Works from any app without focusing the widget. Override with `WREN_HOTKEY` (e.g. `WREN_HOTKEY='<ctrl>+<alt>+r'`).
-- **Quit:** tap `Ctrl+Alt+Q` (override with `WREN_QUIT_HOTKEY`; set it empty to disable), or click the `⏻` button on the widget twice. Both stop the service cleanly — under systemd this stops `wren.service` until restarted.
-- **Paste target:** Ren remembers the last app you were working in. Clicking **Paste** inside the widget is safe — it activates that remembered window and pastes there instead of typing into the widget. A background watcher keeps the target fresh while Ren is idle.
-- **Voice output:** Ren speaks replies and a "Draft ready" confirmation through the workstation's default audio output (`espeak-ng`, endpoint `POST /api/speak`). Install `espeak-ng` for spoken output; the widget works without it.
+### Floating plasma orb
+
+`--native` launches a frameless, transparent GTK3+WebKit2 floating orb (340×390 stage) instead of a windowed card. The orb:
+
+- renders a chromatic plasma sphere with a radial voice equalizer that glows while you talk and while Ren speaks;
+- clicks **through to the window beneath** everywhere outside the orb's active hit area (X11 input shape), so it never covers buttons or text;
+- does **not steal focus** — clicking it leaves your current app focused;
+- opens a radial fan-out menu on click: TALK (hold-to-talk conversation), DICT (dictate to preview), mode cycle, VOICE cycle/mute, ASK (one-line type-in), PAIR (phone pairing info), QUIT (double-tap to stop);
+- drags anywhere to reposition and remembers its spot in `~/.config/wren/orb-position.json`.
+
+### Desktop hotkeys
+
+- **Dictate:** hold `Ctrl+Shift`, speak, release — a preview pill appears; click **Paste** (explicit) to write it into your remembered app. Override with `WREN_HOTKEY`.
+- **Talk:** hold `Alt+Space`, speak, release — Ren answers conversationally and speaks the reply. Override with `WREN_TALK_HOTKEY`.
+- **Quit:** tap `Ctrl+Alt+Q` (override with `WREN_QUIT_HOTKEY`), or double-tap QUIT in the radial menu. Stops `wren.service` cleanly under systemd.
+- Pressing an extra key while a modifier hold is armed (e.g. `Ctrl+Shift+C`) cancels the capture so clipboard shortcuts never collide.
+- `Ctrl+Alt` stays reserved for OpenWhispr — the defaults do not collide.
+
+### Safety notes
+
+- **Paste target:** Ren remembers the last app you were working in. Clicking **Paste** inside the orb is safe — it activates that remembered window and pastes there instead of typing into the widget. A background watcher keeps the target fresh while Ren is idle. Paste never sends Enter/Return.
+- Consequential actions (paste, browser actions, workspace writes, MCP `ren_paste_commit`) still require explicit confirmation.
 
 ## Phone
 

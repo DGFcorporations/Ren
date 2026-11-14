@@ -5,8 +5,8 @@ from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
-from wren.browser.session import BrowserError, check_url
 from wren.bridge.workspace import WorkspaceError, WorkspaceWriter
+from wren.browser.session import BrowserError, check_url
 from wren.core.controller import WrenController
 from wren.mcp.server import handle
 from wren.ui.orb_preview import create_app
@@ -46,7 +46,9 @@ def test_websocket_dictation_returns_preview():
     client = TestClient(app)
     with client.websocket_connect("/ws/connect") as websocket:
         websocket.receive_json()
-        websocket.send_json({"action": "dictate", "text": "remind me to call the clinic", "screen": "Calendar"})
+        websocket.send_json(
+            {"action": "dictate", "text": "remind me to call the clinic", "screen": "Calendar"}
+        )
         msg = websocket.receive_json()
         assert msg["type"] == "paste_preview"
         assert msg["requires_confirm"] is True
@@ -94,7 +96,12 @@ def test_mcp_lists_tools_and_guards_paste():
     assert "ren_files" in names
     assert "ren_screen_read" in names
     blocked = handle(
-        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "ren_paste_commit", "arguments": {}}}
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "ren_paste_commit", "arguments": {}},
+        }
     )
     assert blocked["result"]["isError"] is True
     assert "confirm" in blocked["result"]["content"][0]["text"]
