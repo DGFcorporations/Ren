@@ -513,8 +513,8 @@ FLOATING_PLASMA_ORB_HTML = """<!DOCTYPE html>
   }
   #orb-hit {
     position: absolute;
-    width: 74px;
-    height: 74px;
+    width: 100px;
+    height: 100px;
     border-radius: 50%;
     cursor: pointer;
     pointer-events: auto;
@@ -651,6 +651,24 @@ if (authToken) {
     return originalFetch(url, opts);
   };
 }
+
+// Reconcile WebKit DPI/text-scaling zoom with the native X11 input-shape rects,
+// which are defined in device pixels. Scale #stage so stage px == device px.
+(function fitStageToWindow() {
+  const stage = document.getElementById('stage');
+  const apply = () => {
+    stage.style.position = 'absolute';
+    stage.style.left = '0px';
+    stage.style.top = '0px';
+    stage.style.margin = '0';
+    stage.style.transformOrigin = '0 0';
+    const zx = window.innerWidth / 340;
+    const zy = window.innerHeight / 390;
+    stage.style.zoom = String(Math.min(zx, zy));
+  };
+  apply();
+  window.addEventListener('resize', apply);
+})();
 
 const canvas = document.getElementById('plasma-canvas');
 const ctx = canvas.getContext('2d');

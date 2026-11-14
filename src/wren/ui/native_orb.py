@@ -192,6 +192,13 @@ class NativeOrbWindow:
         if hasattr(settings, "set_enable_webgl"):
             settings.set_enable_webgl(True)
 
+        def _retry_load(*_args):
+            GLib.timeout_add(1200, lambda: (webview.load_uri(self.url), False)[1])
+            return False
+
+        webview.connect("load-failed", _retry_load)
+        webview.connect("web-process-crashed", _retry_load)
+
         win.add(webview)
         self._win = win
 

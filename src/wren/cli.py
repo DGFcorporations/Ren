@@ -320,7 +320,20 @@ def main():
         server = uvicorn.Server(server_config)
         thread = threading.Thread(target=server.run, daemon=True)
         thread.start()
-        time.sleep(0.8)
+
+        # Wait until the HTTP server actually answers before the WebView loads —
+        # a failed first load leaves a permanently blank, inert orb.
+        import urllib.request
+
+        status_url = f"http://{connect_host}:{args.port}/api/status"
+        for _ in range(80):
+            try:
+                with urllib.request.urlopen(status_url, timeout=0.5) as resp:
+                    if resp.status == 200:
+                        break
+            except Exception:
+                time.sleep(0.15)
+
         _start_hotkey_listener(controller)
 
         print(f"Launching frameless RGBA floating plasma orb at {orb_url}...")
