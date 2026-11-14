@@ -1,6 +1,7 @@
 """Wren Controller: Authoritative coordinator of voice, elevation, buffer, clipboard, and target paste."""
 
 import os
+import re
 import threading
 import time
 
@@ -45,6 +46,7 @@ class WrenController:
         self.mode: str = "elevate"
         self.phone_screen: dict = {"package": "", "text": "", "at": 0.0}
         self.conversation: list[dict] = []
+        self.conversation_ttl: float = 900.0  # turns older than 15 min are excluded from prompts
         self.last_reply: str = ""
         self.last_transcript: str = ""
         self.is_speaking: bool = False
@@ -160,6 +162,34 @@ class WrenController:
         else:
             self.state_machine.transition(WrenState.IDLE)
 
+    _STT_NOISE_ARTIFACTS = {
+        "thank you", "thanks", "thank you for watching", "thanks for watching",
+        "you", "bye", "bye bye", "okay", "ok", "so", "the end", "subscribe",
+        "see you", "thank you so much", "all right", "alright", "um", "uh",
+        "music", "applause", "laughter",
+    }
+
+    def _is_stt_artifact(self, text: str, wav_data: bytes) -> bool:
+        """
+        Grounding check: is this transcript plausibly real speech by the user?
+        Whisper hallucinates stock phrases on silence/noise — a short,
+        low-energy or near-silent capture that yields one of those phrases
+        is dropped here, before it can become a phantom conversation turn.
+        """
+        normalized = re.sub(r"[^\w\s]", "", text.lower()).strip()
+        if not normalized:
+            return True
+        peak = float(getattr(self.audio, "peak_level", 1.0) or 0.0)
+        duration_s = max(0, len(wav_data) - 44) / 32000.0  # 16kHz s16le mono
+        # Known noise-hallucination phrase on a weak capture -> artifact.
+        # Real phrases at real energy are kept even when short.
+        if normalized in self._STT_NOISE_ARTIFACTS and (peak < 0.04 or duration_s < 0.8):
+            return True
+        # Essentially silent mic + trivially short transcript -> drop.
+        if peak < 0.02 and len(normalized) <= 2:
+            return True
+        return False
+
     def stop_listening(self, intent: str | None = None) -> Draft | None:
         """
         Stop audio recording, run AST/STT transcription, and either:
@@ -182,10 +212,17 @@ class WrenController:
             self._restore_after_empty_capture()
             return None
 
+        # Grounding gate: a transcript is only real if the user actually spoke.
+        # Short / low-energy captures that yield known Whisper noise artifacts
+        # are dropped here — before they can become phantom conversation turns.
+        if self._is_stt_artifact(raw_text, wav_data):
+            self._restore_after_empty_capture()
+            return None
+
         self.last_transcript = raw_text
 
         if eff_intent == "talk":
-            reply = self.converse(raw_text)
+            reply = self.converse(raw_text, source="voice")
             self.state_machine.transition(WrenState.IDLE)
             self.speak_async(reply)
             return None
@@ -395,23 +432,34 @@ class WrenController:
         self.state_machine.transition(WrenState.DRAFT_READY)
         return draft
 
-    def converse(self, text: str) -> str:
+    def converse(self, text: str, source: str = "orb") -> str:
         """Live reply for the orb. Does not paste and does not rewrite the clipboard."""
         cleaned = (text or "").strip()
         if not cleaned:
             raise ValueError("Empty message")
+        now = time.time()
         notes: list[str] = []
         if self.active_target:
             notes.append(
                 f"Desktop focus: {self.active_target.wm_class} — {self.active_target.title[:160]}"
             )
-        if self.phone_screen.get("text"):
-            notes.append(str(self.phone_screen["text"]))
+        # Phone screen is context, not gospel: only if fresh (<10 min old).
+        phone = self.phone_screen
+        if phone.get("text") and now - float(phone.get("at", 0)) < 600:
+            notes.append(
+                f"Phone screen ({phone.get('package', '?')}): {str(phone['text'])[:1500]}"
+            )
         screen_note = "\n".join(notes)
-        result = self.elevator.converse(cleaned, screen_note=screen_note, history=self.conversation)
+        # History TTL: drop turns older than 15 min so stale sessions can't
+        # masquerade as the current conversation.
+        live_history = [
+            t for t in self.conversation
+            if now - float(t.get("at", now)) < self.conversation_ttl
+        ]
+        result = self.elevator.converse(cleaned, screen_note=screen_note, history=live_history)
         reply = result.elevated_text.strip()
-        self.conversation.append({"role": "user", "content": cleaned})
-        self.conversation.append({"role": "assistant", "content": reply})
+        self.conversation.append({"role": "user", "content": cleaned, "at": now, "src": source})
+        self.conversation.append({"role": "assistant", "content": reply, "at": time.time()})
         self.conversation = self.conversation[-20:]
         self.last_reply = reply
         return reply

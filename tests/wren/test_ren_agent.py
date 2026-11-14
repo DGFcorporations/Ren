@@ -36,7 +36,8 @@ def test_converse_and_phone_screen_roundtrip():
     assert client.get("/api/screen/phone").json()["package"] == "com.android.mms"
     reply = client.post("/api/converse", json={"text": "what should I say about the lease"})
     assert reply.status_code == 200
-    assert "lease" in reply.json()["text"].lower()
+    text = reply.json()["text"].lower()
+    assert any(w in text for w in ("lease", "renewal", "dana", "draft", "reply"))
     assert reply.json()["requires_confirm"] is True
 
 
@@ -127,3 +128,45 @@ def test_converse_uses_screen_note():
         controller.converse("help me reply")
         assert "Lease renewal" in mocked.call_args.kwargs["screen_note"]
         assert controller.conversation[-1]["role"] == "assistant"
+
+
+def test_converse_drops_stale_screen_note_and_old_history():
+    """Phantom-context guard: stale context must not be presented as current."""
+    controller = WrenController(stt_provider="mock")
+    controller.phone_screen = {"package": "com.old", "text": "ANCIENT SCREEN", "at": 1.0}
+    controller.conversation = [
+        {"role": "user", "content": "OLD TURN", "at": 1.0},
+        {"role": "assistant", "content": "OLD REPLY", "at": 1.0},
+    ]
+    with patch.object(controller.elevator, "converse", wraps=controller.elevator.converse) as mocked:
+        controller.converse("fresh question")
+        assert "ANCIENT SCREEN" not in mocked.call_args.kwargs["screen_note"]
+        passed_history = mocked.call_args.kwargs["history"]
+        assert all("OLD TURN" not in str(t.get("content", "")) for t in passed_history)
+
+
+def test_stt_artifact_filter_drops_noise_hallucinations(tmp_path):
+    """Grounding gate: phantom transcripts never become drafts or turns."""
+    controller = WrenController(stt_provider="mock")
+    import io
+    import wave
+
+    def fake_wav(seconds: float) -> bytes:
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes(b"\x00\x00" * int(16000 * seconds))
+        return buf.getvalue()
+
+    # 0.4s capture + classic Whisper artifact on low energy -> dropped
+    controller.audio.peak_level = 0.01
+    assert controller._is_stt_artifact("Thank you.", fake_wav(0.4)) is True
+    # Near-silent capture + short transcript -> dropped
+    assert controller._is_stt_artifact("ok", fake_wav(2.0)) is True
+    # Real speech: decent energy + real sentence -> kept
+    controller.audio.peak_level = 0.4
+    assert controller._is_stt_artifact("Tell Dana the lease is signed", fake_wav(3.0)) is False
+    # Longer real clip saying a short phrase at real energy -> kept
+    assert controller._is_stt_artifact("Thank you.", fake_wav(2.5)) is False

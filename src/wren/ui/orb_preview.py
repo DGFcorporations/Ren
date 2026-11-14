@@ -97,6 +97,7 @@ class DictateRequest(BaseModel):
 class ConverseRequest(BaseModel):
     text: str
     speak: bool = False
+    src: str = "orb"
 
 
 class SpeakRequest(BaseModel):
@@ -984,7 +985,10 @@ async function askFromDraft() {
   const r = await fetch('/api/converse', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text: txt, speak: true })
+    body: JSON.stringify({
+      text: `Discuss this draft I just dictated:\n>>>\n${txt}\n<<<`,
+      src: 'draft', speak: true
+    })
   });
   if (r.ok) {
     const d = await r.json();
@@ -1374,7 +1378,10 @@ def create_app(
             "phone_screen": {
                 "package": controller.phone_screen.get("package", ""),
                 "chars": len(controller.phone_screen.get("text") or ""),
+                "age_s": round(time.time() - float(controller.phone_screen.get("at", 0)), 1)
+                    if controller.phone_screen.get("at") else None,
             },
+            "conversation_turns": len(controller.conversation),
             "mcp_http_mounted": mcp_transport is not None,
         }
 
@@ -1561,12 +1568,18 @@ def create_app(
     @app.post("/api/converse")
     def converse(req: ConverseRequest):
         try:
-            reply = controller.converse(req.text)
+            reply = controller.converse(req.text, source=req.src)
             if req.speak:
                 controller.speak_async(reply)
             return {"type": "assistant_message", "text": reply, "requires_confirm": True}
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
+
+    @app.post("/api/conversation/clear")
+    def clear_conversation():
+        controller.conversation.clear()
+        controller.last_reply = ""
+        return {"type": "conversation_cleared"}
 
     @app.get("/api/paste/preview")
     def paste_preview():
