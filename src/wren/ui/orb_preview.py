@@ -1222,7 +1222,7 @@ def create_app(
     try:
         from wren.mcp.http import create_mcp_transport
 
-        mcp_transport = create_mcp_transport()
+        mcp_transport = create_mcp_transport(controller)
     except Exception as exc:
         logging.getLogger(__name__).warning("Ren MCP HTTP transport unavailable: %s", exc)
 
@@ -1348,46 +1348,7 @@ def create_app(
 
     @app.get("/api/status")
     def get_status():
-        target_dict = None
-        if controller.active_target:
-            target_dict = {
-                "window_id": controller.active_target.window_id,
-                "wm_class": controller.active_target.wm_class,
-                "title": controller.active_target.title,
-                "is_terminal": controller.active_target.is_terminal,
-            }
-
-        draft_dict = None
-        if controller.current_draft:
-            draft_dict = {
-                "id": controller.current_draft.id,
-                "revision": controller.current_draft.revision,
-                "text": controller.current_draft.text,
-                "op": controller.current_draft.op,
-            }
-
-        return {
-            "state": controller.state.value,
-            "mode": controller.mode,
-            "is_recording": controller.audio.is_recording,
-            "is_speaking": controller.is_speaking,
-            "voice_level": round(controller.voice_level, 3),
-            "tts_provider": controller.tts.provider,
-            "tts_muted": controller.tts.muted,
-            "current_draft": draft_dict,
-            "last_diff": controller.last_diff,
-            "last_transcript": controller.last_transcript,
-            "active_target": target_dict,
-            "last_reply": controller.last_reply,
-            "phone_screen": {
-                "package": controller.phone_screen.get("package", ""),
-                "chars": len(controller.phone_screen.get("text") or ""),
-                "age_s": round(time.time() - float(controller.phone_screen.get("at", 0)), 1)
-                    if controller.phone_screen.get("at") else None,
-            },
-            "conversation_turns": len(controller.conversation),
-            "mcp_http_mounted": mcp_transport is not None,
-        }
+        return controller.status_dict(mcp_transport is not None)
 
     @app.post("/api/listen/start")
     def start_listen(req: ListenStartRequest | None = None):

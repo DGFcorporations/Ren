@@ -107,6 +107,50 @@ class WrenController:
         """Unified 0.0..1.0 energy level driving the orb's radial glow equalizer."""
         return max(self.audio.level, self.speaking_level)
 
+    def status_dict(self, mcp_http_mounted: bool) -> dict:
+        """The /api/status payload, shared by the REST route and the in-process
+        MCP dispatch so both report exactly the same shape."""
+        target_dict = None
+        if self.active_target:
+            target_dict = {
+                "window_id": self.active_target.window_id,
+                "wm_class": self.active_target.wm_class,
+                "title": self.active_target.title,
+                "is_terminal": self.active_target.is_terminal,
+            }
+
+        draft_dict = None
+        if self.current_draft:
+            draft_dict = {
+                "id": self.current_draft.id,
+                "revision": self.current_draft.revision,
+                "text": self.current_draft.text,
+                "op": self.current_draft.op,
+            }
+
+        return {
+            "state": self.state.value,
+            "mode": self.mode,
+            "is_recording": self.audio.is_recording,
+            "is_speaking": self.is_speaking,
+            "voice_level": round(self.voice_level, 3),
+            "tts_provider": self.tts.provider,
+            "tts_muted": self.tts.muted,
+            "current_draft": draft_dict,
+            "last_diff": self.last_diff,
+            "last_transcript": self.last_transcript,
+            "active_target": target_dict,
+            "last_reply": self.last_reply,
+            "phone_screen": {
+                "package": self.phone_screen.get("package", ""),
+                "chars": len(self.phone_screen.get("text") or ""),
+                "age_s": round(time.time() - float(self.phone_screen.get("at", 0)), 1)
+                    if self.phone_screen.get("at") else None,
+            },
+            "conversation_turns": len(self.conversation),
+            "mcp_http_mounted": mcp_http_mounted,
+        }
+
     def set_mode(self, mode: str) -> str:
         """Set operation mode: 'elevate' | 'agent' | 'brainstorm' | 'talk'."""
         valid_modes = {"elevate", "agent", "brainstorm", "talk"}

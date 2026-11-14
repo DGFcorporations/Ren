@@ -1,7 +1,10 @@
 """Stdio MCP bridge so other agents can call the running Ren workstation.
 
-Ren itself must already be running (`wren`). This process only forwards tool
-calls to the loopback API. It does not open its own browser or microphone.
+Ren itself must already be running (`wren`). When this module runs inside the
+Ren server process (the HTTP MCP transport), tool calls run directly against
+the live controller — no HTTP self-call. As a standalone stdio process it
+forwards tool calls to the loopback API. It does not open its own browser or
+microphone.
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import Any
 
 PROTOCOL = "2024-11-05"
 REN_URL = os.environ.get("REN_URL", "http://127.0.0.1:8765").rstrip("/")
@@ -21,6 +25,16 @@ REN_URL = os.environ.get("REN_URL", "http://127.0.0.1:8765").rstrip("/")
 # the client addressed (any port / host / future tunnel scheme). stdio leaves it unset.
 request_base_url: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "wren_ren_request_base_url", default=None
+)
+
+# Set per-request by the in-process HTTP MCP transport to the live controller.
+# When set, dispatch() runs tools directly against the controller and never
+# makes an HTTP call to the REST API — so a remote MCP client behind a proxy
+# (Cloudflare) cannot break the tools by blocking the self-call. stdio leaves
+# it unset and keeps the loopback-HTTP path. The controller is typed Any here
+# on purpose: the stdio bridge must not import the controller graph.
+local_controller: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+    "wren_local_controller", default=None
 )
 
 TOOLS = [
@@ -139,7 +153,105 @@ def _request(method: str, path: str, payload: dict | None = None, timeout: float
         raise MCPError(f"Ren is not reachable at {REN_URL}. Start it with ./run_ren.sh. {exc.reason}") from exc
 
 
+def _dispatch_local(controller: Any, name: str, args: dict) -> dict:
+    """Run a tool directly against the live controller, without any HTTP call.
+
+    This is the path the in-process HTTP MCP transport uses. Every branch
+    mirrors the REST route handler in ``wren.ui.orb_preview`` for the same
+    operation (same controller call, same result shape, same confirm gates),
+    so the tool contract is identical whether the caller reaches Ren over
+    stdio (loopback HTTP) or over MCP-HTTP (direct). Controller failures
+    surface as MCPError, exactly like an HTTP 400 from the REST route.
+    """
+    try:
+        if name == "ren_status":
+            # mcp_http_mounted is True by construction: this path only runs
+            # when the MCP HTTP transport is active.
+            return controller.status_dict(True)
+        if name == "ren_converse":
+            # REST defaults: src="orb", speak=False — the MCP call sends text only.
+            reply = controller.converse(args.get("text", ""), source="orb")
+            return {"type": "assistant_message", "text": reply, "requires_confirm": True}
+        if name == "ren_dictate":
+            draft = controller.accept_dictation(args.get("text", ""), source="mcp")
+            return {
+                "type": "paste_preview",
+                "requires_confirm": True,
+                "raw": args.get("text", ""),
+                "status": "draft_ready",
+                "revision": draft.revision,
+                "text": draft.text,
+            }
+        if name == "ren_screen_read":
+            source = args.get("source") or "both"
+            out: dict = {"source": source}
+            if source in {"phone", "both"}:
+                out["phone"] = controller.phone_screen
+            if source in {"desktop", "both"}:
+                ctx = controller.get_screen_context(capture_screenshot=False)
+                out["desktop"] = {
+                    "app_name": ctx.app_name,
+                    "window_title": ctx.window_title,
+                    "window_id": ctx.window_id,
+                    "is_browser": ctx.is_browser,
+                    "is_editor": ctx.is_editor,
+                    "is_terminal": ctx.is_terminal,
+                    "timestamp": ctx.timestamp,
+                }
+            return out
+        if name == "ren_paste_preview":
+            return controller.paste_preview()
+        if name == "ren_paste_commit":
+            if args.get("confirm") is not True:
+                raise MCPError("ren_paste_commit requires confirm true after the clipboard preview")
+            receipt = controller.paste_current_draft()
+            return {"status": "pasted", "outcome": receipt.outcome, "evidence": receipt.evidence}
+        if name == "ren_browser":
+            return controller.browser.act(
+                args.get("op"),
+                confirm=bool(args.get("confirm")),
+                approval_id=args.get("approval_id"),
+                url=args.get("url"),
+                selector=args.get("selector"),
+                text=args.get("text"),
+                x=args.get("x"),
+                y=args.get("y"),
+                delta_y=args.get("delta_y"),
+            )
+        if name == "ren_files":
+            op = args.get("op")
+            if op == "list":
+                return controller.workspace.list_dir(args.get("path") or ".")
+            if op == "read":
+                return controller.workspace.read(args.get("path", ""))
+            if op == "write":
+                if args.get("approval_id"):
+                    return controller.workspace.commit_write(args.get("approval_id"))
+                return controller.workspace.write(
+                    args.get("path", ""),
+                    args.get("content", ""),
+                    confirm=bool(args.get("confirm")),
+                )
+            raise MCPError("ren_files op must be list, read, or write")
+        if name == "ren_set_mode":
+            new_mode = controller.set_mode(args.get("mode", "elevate"))
+            return {"status": "ok", "mode": new_mode}
+        raise MCPError(f"Unknown tool {name}")
+    except MCPError:
+        raise
+    except Exception as exc:
+        raise MCPError(str(exc)) from exc
+
+
 def dispatch(name: str, args: dict) -> dict:
+    # In-process MCP transport: run the tool directly against the live
+    # controller. No HTTP call to the REST API, so a proxy (Cloudflare) can
+    # never block the tools by banning the self-call.
+    controller = local_controller.get()
+    if controller is not None:
+        return _dispatch_local(controller, name, args)
+    # Standalone stdio bridge: separate process, so the loopback HTTP API is
+    # the only way to reach the running Ren.
     if name == "ren_status":
         return _request("GET", "/api/status")
     if name == "ren_converse":

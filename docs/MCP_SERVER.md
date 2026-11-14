@@ -16,6 +16,16 @@
   Manus cloud computers**. The missing piece is an HTTP transport for the SAME
   tool surface. New code is a transport adapter only: reuse `TOOLS` +
   `dispatch()` verbatim — zero duplicated tool logic.
+- **Local dispatch (no HTTP self-call):** when the HTTP MCP transport is
+  active, `dispatch()` runs tools directly against the live controller
+  (`_dispatch_local` in `server.py`) instead of HTTP-calling the REST API.
+  A remote client behind a proxy (Cloudflare) can no longer break the tools
+  by banning the self-call's user-agent (error 1010). The stdio bridge is a
+  separate process and keeps the loopback-HTTP path. Both transports still
+  go through the single `dispatch()` entry point; the local path mirrors
+  each REST route handler's controller call and result shape, and the
+  `/api/status` payload is built once by `WrenController.status_dict()` so
+  the two paths cannot drift.
 - **Edge Cases:** `dispatch()` raises `MCPError` → must surface as MCP
   `isError` content (same as stdio `handle()`); empty `ren_converse`/`ren_dictate`
   text → REST 400 → `isError`; MCP `notifications/*` → no response; batch JSON
@@ -39,8 +49,12 @@
   `/mcp` HTTP endpoint are TWO transports over ONE `dispatch()` — changes to
   tools land once. `/ws/connect` keeps its own inline auth check — the
   forwarded-header fix must cover it too or it stays a bypass when a tunnel
-  lands. `dispatch()` calls `REN_URL` (default `127.0.0.1:8765`) — inside the
-  app this is a loopback self-call, no token needed; env override still works.
+  lands. `dispatch()` calls `REN_URL` (default `127.0.0.1:8765`) only when no
+  local controller is registered (the stdio bridge, a separate process). When
+  the HTTP transport is active it registers the live controller and
+  `dispatch()` runs tools directly against it — no HTTP self-call, so a proxy
+  in front of the public URL cannot interfere; env override still works for
+  the stdio path.
 - **Six-Month Sanity:** ~150-line transport module reusing the existing tool
   catalog. No generic proxy tool — the 9 typed tools ARE the contract surface.
   If REST endpoints change, `dispatch()` breaks loudly in both transports.
@@ -61,8 +75,10 @@
 - **Permitted Knowledge:** `wren.mcp.server.TOOLS`, `wren.mcp.server.dispatch`,
   `MCPError`, `REN_URL`; app auth token; `is_loopback_client`.
 - **Forbidden Knowledge:** must NOT bypass `dispatch()` to call controller
-  directly (keeps one tool path), must NOT read secrets, must NOT expose shell/
-  arbitrary fetch, must NOT weaken confirm gates.
+  directly (keeps one tool path) — the local-direct path lives INSIDE
+  `dispatch()` itself, so both transports still enter through it; must NOT
+  read secrets, must NOT expose shell/ arbitrary fetch, must NOT weaken
+  confirm gates.
 
 ## 3. Strict Prohibitions ("NEVER" Rules)
 
@@ -92,6 +108,25 @@
 #### [NEW] src/wren/mcp/http.py
 - **Responsibility:** build the streamable-HTTP MCP ASGI app reusing `TOOLS` +
   `dispatch()`; optional-import safe (`mcp` absent → returns None).
+- **Local dispatch:** the transport takes the live controller from
+  `create_app` and registers it per request (`wren.mcp.server.local_controller`)
+  so `dispatch()` runs tools directly instead of HTTP-calling the API.
+#### [MODIFY] src/wren/mcp/server.py
+- **Boundary Change:** `dispatch()` routes to `_dispatch_local()` when a local
+  controller is registered (HTTP transport); the stdio bridge keeps the
+  loopback-HTTP path via `REN_URL`. `_dispatch_local` mirrors each REST route
+  handler's controller call, result shape, and confirm gate.
+#### [MODIFY] src/wren/core/controller.py
+- **Boundary Change:** new `status_dict(mcp_http_mounted)` — the single source
+  of truth for the `/api/status` payload, used by the REST route and by local
+  dispatch alike.
+#### [MODIFY] src/wren/ui/orb_preview.py
+- **Boundary Change:** `get_status()` delegates to `controller.status_dict()`;
+  `create_mcp_transport(controller)` passes the live controller through.
+#### [MODIFY] tests/wren/test_mcp_http.py
+- **Boundary Change:** local-dispatch tests — MCP tools run with `_request`
+  patched to explode (proves no HTTP self-call), local status shape matches
+  REST, stdio fallback still uses HTTP, confirm gates preserved.
 #### [NEW] tests/wren/test_mcp_http.py
 - **Responsibility:** transport tests — initialize/tools-list/tools-call over
   httpx, auth 401 cases, isError mapping, confirm-gate preservation.

@@ -37,9 +37,16 @@ def _base_url_from_scope(scope: dict) -> str:
 
 
 class McpHttpTransport:
-    """ASGI endpoint + session manager exposing the Ren tool catalog over MCP."""
+    """ASGI endpoint + session manager exposing the Ren tool catalog over MCP.
 
-    def __init__(self) -> None:
+    Created inside the Ren server process, so it holds the live controller:
+    tool calls run directly against it (``wren.mcp.server.local_controller``)
+    instead of HTTP-calling the REST API. A remote MCP client behind a proxy
+    therefore cannot break the tools by blocking the self-call.
+    """
+
+    def __init__(self, controller=None) -> None:
+        self.controller = controller
         self.server = Server("ren", version="0.1.0a3")
 
         @self.server.list_tools()
@@ -56,8 +63,10 @@ class McpHttpTransport:
         @self.server.call_tool()
         async def _call_tool(name: str, arguments: dict) -> CallToolResult:
             try:
-                # dispatch() is sync urllib to the loopback API — including this
-                # same server. Offload to a thread or the event loop deadlocks.
+                # dispatch() is sync. When this transport holds the live
+                # controller it runs the tool directly (no HTTP self-call);
+                # the stdio bridge falls back to the loopback API. Either
+                # way it must not run on the event loop, or it deadlocks.
                 result = await asyncio.to_thread(bridge.dispatch, name, arguments or {})
             except bridge.MCPError as exc:
                 return CallToolResult(
@@ -80,17 +89,26 @@ class McpHttpTransport:
 
     async def __call__(self, scope: dict, receive, send) -> None:
         token = bridge.request_base_url.set(_base_url_from_scope(scope))
+        # Register the live controller so dispatch() runs tools directly
+        # instead of HTTP-calling the REST API. Reset after the request so
+        # the stdio bridge (same module, separate process) is unaffected.
+        local_token = bridge.local_controller.set(self.controller)
         try:
             await self.manager.handle_request(scope, receive, send)
         finally:
+            bridge.local_controller.reset(local_token)
             bridge.request_base_url.reset(token)
 
 
-def create_mcp_transport() -> McpHttpTransport | None:
-    """Build the HTTP MCP transport, or None when the ``mcp`` package is absent."""
+def create_mcp_transport(controller=None) -> McpHttpTransport | None:
+    """Build the HTTP MCP transport, or None when the ``mcp`` package is absent.
+
+    ``controller`` is the live WrenController from ``create_app``; when given,
+    MCP tool calls run directly against it instead of HTTP-calling the API.
+    """
     try:
         import mcp  # noqa: F401
     except ImportError:
         logger.warning("mcp package not installed; /mcp HTTP transport disabled")
         return None
-    return McpHttpTransport()
+    return McpHttpTransport(controller)
