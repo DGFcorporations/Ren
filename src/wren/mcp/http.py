@@ -45,8 +45,9 @@ class McpHttpTransport:
     therefore cannot break the tools by blocking the self-call.
     """
 
-    def __init__(self, controller=None) -> None:
+    def __init__(self, controller=None, auth_token: str | None = None) -> None:
         self.controller = controller
+        self.auth_token = auth_token
         self.server = Server("ren", version="0.1.0a3")
 
         @self.server.list_tools()
@@ -93,6 +94,23 @@ class McpHttpTransport:
         # instead of HTTP-calling the REST API. Reset after the request so
         # the stdio bridge (same module, separate process) is unaffected.
         local_token = bridge.local_controller.set(self.controller)
+        # Resolve the bearer token to an agent identity for scope enforcement
+        # in dispatch(). Loopback callers carry no token -> 'local' full access
+        # (they already passed the loopback auth gate in the REST middleware).
+        agent_token = None
+        for hname, hval in scope.get("headers", []):
+            if hname.lower() == b"authorization" and hval.lower().startswith(b"bearer "):
+                agent_token = hval[7:].decode("utf-8", "replace").strip()
+                break
+        agent = {"name": "local", "scopes": ["*"]}
+        if agent_token:
+            try:
+                from wren.core.auth import resolve_agent
+
+                agent = resolve_agent(agent_token, self.auth_token) or agent
+            except Exception:
+                pass
+        agent_ctx = bridge.current_agent.set(agent)
         # Each MCP request extends the remote-agent lease: while an agent is
         # connected, local mutating surfaces (hotkeys, local REST actions)
         # yield so the agent runs uncontested. Lease expires on its own when
@@ -105,17 +123,20 @@ class McpHttpTransport:
         finally:
             bridge.local_controller.reset(local_token)
             bridge.request_base_url.reset(token)
+            bridge.current_agent.reset(agent_ctx)
 
 
-def create_mcp_transport(controller=None) -> McpHttpTransport | None:
+def create_mcp_transport(controller=None, auth_token=None) -> McpHttpTransport | None:
     """Build the HTTP MCP transport, or None when the ``mcp`` package is absent.
 
     ``controller`` is the live WrenController from ``create_app``; when given,
     MCP tool calls run directly against it instead of HTTP-calling the API.
+    ``auth_token`` lets the transport resolve bearer tokens to agent
+    identities for per-agent scope enforcement.
     """
     try:
         import mcp  # noqa: F401
     except ImportError:
         logger.warning("mcp package not installed; /mcp HTTP transport disabled")
         return None
-    return McpHttpTransport(controller)
+    return McpHttpTransport(controller, auth_token)

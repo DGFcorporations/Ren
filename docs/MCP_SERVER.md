@@ -164,3 +164,29 @@
 - **Status:** APPROVED (owner, 2026-11-13)
 - **Downstream Consumers:** Cue cloud agent (after owner-approved public ingress),
   LAN/Tailscale MCP clients, `ren-mcp` stdio (unchanged).
+
+## Delegation layer (2026-11-14)
+
+**New tools:** `ren_agent_hello` (announce name+capabilities — call once after
+initialize), `ren_memory_remember` / `ren_memory_recall` / `ren_memory_forget`
+(durable facts; `tags: correction` feeds the STT glossary),
+`ren_handoff_create` / `ren_handoff_claim` / `ren_handoff_complete` /
+`ren_handoff_list` (task queue — agents claim work whose `requires` match
+their advertised capabilities), `ren_speak` (remote agents borrow Ren's TTS
+voice).
+
+**Backing store:** `~/.config/wren/memory.db` (SQLite + FTS5, env
+`WREN_MEMORY_DB`). Tables: `facts`, `agents`, `handoffs`.
+
+**Per-agent tokens:** `~/.config/wren/agent-tokens.json` (env
+`WREN_AGENT_TOKENS`): `{"<token>": {"name": "bart", "scopes": ["*"]}}`.
+The master auth-token resolves as `{"name":"master","scopes":["*"]}`.
+A `"read"`-scoped agent gets read-only tools (status, screen, files
+list/read, memory recall, handoff list) — mutating tools and non-GET REST
+calls are denied. Loopback callers resolve as `local`/`*`.
+
+**Remote yield:** while an MCP client is connected, local mutating REST +
+hotkeys yield (`409 remote_agent_session`, lease `WREN_REMOTE_SESSION_TTL`,
+default 180s). Delegation endpoints (`/api/memory/*`, `/api/handoffs*`,
+`/api/agents/hello`) are NOT yield-blocked — they are the agent's surface.
+`POST /api/session/release` is the owner's kill-switch.

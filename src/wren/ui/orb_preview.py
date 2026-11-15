@@ -1222,7 +1222,7 @@ def create_app(
     try:
         from wren.mcp.http import create_mcp_transport
 
-        mcp_transport = create_mcp_transport(controller)
+        mcp_transport = create_mcp_transport(controller, active_auth_token)
     except Exception as exc:
         logging.getLogger(__name__).warning("Ren MCP HTTP transport unavailable: %s", exc)
 
@@ -1256,15 +1256,37 @@ def create_app(
     async def enforce_nonloopback_auth(request: Request, call_next):
         client_host = request.client.host if request.client else None
         request_host = request.url.hostname
+        agent = {"name": "local", "scopes": ["*"]}
 
         if not is_loopback_client(client_host, request_host) or has_proxy_headers(request.headers):
             token = extract_token_from_request(request)
-            if not token or not secrets.compare_digest(token, active_auth_token):
+            if token:
+                from wren.core.auth import resolve_agent
+
+                agent = resolve_agent(token, active_auth_token)
+            else:
+                agent = None
+            if agent is None:
                 return JSONResponse(
                     status_code=401,
                     content={"detail": "Unauthorized: valid bearer token required for non-loopback access"},
                     headers={"WWW-Authenticate": "Bearer"},
                 )
+        request.state.agent = agent
+
+        # 'read'-scoped agents cannot mutate anything over REST — mutating MCP
+        # tools are gated separately inside dispatch().
+        scopes = set(agent.get("scopes") or [])
+        if (
+            request.method != "GET"
+            and request.url.path.startswith("/api/")
+            and "*" not in scopes
+            and "write" not in scopes
+        ):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": f"agent '{agent.get('name')}' has read-only scope"},
+            )
 
         if (
             controller.remote_session_active
@@ -1590,6 +1612,75 @@ def create_app(
         """User kill-switch: end a remote-agent yield lease immediately."""
         controller.release_remote_session()
         return {"status": "released", "remote_session": {"active": False, "ttl_s": 0.0}}
+
+    class MemoryRememberRequest(BaseModel):
+        key: str
+        value: str
+        tags: str = ""
+
+    @app.post("/api/memory/remember")
+    def memory_remember(req: MemoryRememberRequest, request: Request):
+        try:
+            return controller.memory.remember(req.key, req.value, req.tags)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    @app.get("/api/memory/recall")
+    def memory_recall(query: str = "", limit: int = 5):
+        return {"facts": controller.memory.recall(query, limit)}
+
+    @app.post("/api/memory/forget")
+    def memory_forget(req: dict):
+        return {"forgotten": controller.memory.forget(req.get("key", ""))}
+
+    class AgentHelloRequest(BaseModel):
+        name: str
+        capabilities: list[str] = []
+
+    @app.post("/api/agents/hello")
+    def agents_hello(req: AgentHelloRequest):
+        try:
+            return controller.memory.upsert_agent(req.name, req.capabilities)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    class HandoffCreateRequest(BaseModel):
+        task: str
+        requires: list[str] = []
+
+    @app.post("/api/handoffs")
+    def handoff_create(req: HandoffCreateRequest, request: Request):
+        agent = getattr(request.state, "agent", None) or {}
+        try:
+            return controller.memory.create_handoff(
+                req.task, req.requires, created_by=agent.get("name", "rest")
+            )
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    @app.get("/api/handoffs")
+    def handoff_list(status: str | None = None):
+        return {"handoffs": controller.memory.list_handoffs(status)}
+
+    class HandoffClaimRequest(BaseModel):
+        agent: str
+        capabilities: list[str] = []
+
+    @app.post("/api/handoffs/claim")
+    def handoff_claim(req: HandoffClaimRequest):
+        claimed = controller.memory.claim_handoff(req.agent, req.capabilities)
+        return claimed or {"status": "no_open_handoffs"}
+
+    class HandoffCompleteRequest(BaseModel):
+        result: str = ""
+        ok: bool = True
+
+    @app.post("/api/handoffs/{handoff_id}/complete")
+    def handoff_complete(handoff_id: int, req: HandoffCompleteRequest):
+        try:
+            return controller.memory.complete_handoff(handoff_id, req.result, req.ok)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
 
     @app.get("/api/paste/preview")
     def paste_preview():

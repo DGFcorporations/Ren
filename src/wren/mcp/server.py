@@ -37,6 +37,13 @@ local_controller: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
     "wren_local_controller", default=None
 )
 
+# Resolved bearer-token identity ({'name','scopes'}) set per request by the
+# HTTP transport. dispatch() enforces scope on every call: 'read' agents get
+# read-only tools only. stdio leaves it None -> full local access.
+current_agent: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "wren_current_agent", default=None
+)
+
 TOOLS = [
     {
         "name": "ren_status",
@@ -124,6 +131,106 @@ TOOLS = [
             "type": "object",
             "properties": {"mode": {"type": "string", "enum": ["elevate", "agent", "brainstorm"]}},
             "required": ["mode"],
+        },
+    },
+    {
+        "name": "ren_agent_hello",
+        "description": "Announce this agent to the registry: name + capabilities. "
+        "Call once after initialize so Ren knows who is connected and what they can do.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "capabilities": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "ren_memory_remember",
+        "description": "Store a durable fact (key/value/tags). "
+        "tags 'correction' feeds the STT spelling glossary.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string"},
+                "value": {"type": "string"},
+                "tags": {"type": "string"},
+            },
+            "required": ["key", "value"],
+        },
+    },
+    {
+        "name": "ren_memory_recall",
+        "description": "Full-text recall over stored facts. Read-only.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "ren_memory_forget",
+        "description": "Delete a stored fact by key.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"key": {"type": "string"}},
+            "required": ["key"],
+        },
+    },
+    {
+        "name": "ren_handoff_create",
+        "description": "Queue a task for an agent to claim later. requires lists needed capabilities.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task": {"type": "string"},
+                "requires": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["task"],
+        },
+    },
+    {
+        "name": "ren_handoff_claim",
+        "description": "Claim the oldest open handoff your capabilities satisfy.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent": {"type": "string"},
+                "capabilities": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["agent"],
+        },
+    },
+    {
+        "name": "ren_handoff_complete",
+        "description": "Report a claimed handoff done (or failed) with its result text.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer"},
+                "result": {"type": "string"},
+                "ok": {"type": "boolean"},
+            },
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "ren_handoff_list",
+        "description": "List handoffs, optionally filtered by status (open/claimed/done/failed). Read-only.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"status": {"type": "string"}},
+        },
+    },
+    {
+        "name": "ren_speak",
+        "description": "Speak text aloud on the workstation through Ren's TTS chain — "
+        "remote agents borrow his voice.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
         },
     },
 ]
@@ -236,6 +343,43 @@ def _dispatch_local(controller: Any, name: str, args: dict) -> dict:
         if name == "ren_set_mode":
             new_mode = controller.set_mode(args.get("mode", "elevate"))
             return {"status": "ok", "mode": new_mode}
+        if name == "ren_agent_hello":
+            agent = current_agent.get() or {}
+            return controller.memory.upsert_agent(
+                args.get("name") or agent.get("name", "agent"),
+                args.get("capabilities"),
+            )
+        if name == "ren_memory_remember":
+            return controller.memory.remember(
+                args.get("key", ""), args.get("value", ""), args.get("tags", "")
+            )
+        if name == "ren_memory_recall":
+            return {"facts": controller.memory.recall(args.get("query", ""), int(args.get("limit") or 5))}
+        if name == "ren_memory_forget":
+            return {"forgotten": controller.memory.forget(args.get("key", ""))}
+        if name == "ren_handoff_create":
+            agent = current_agent.get() or {}
+            return controller.memory.create_handoff(
+                args.get("task", ""), args.get("requires"), created_by=agent.get("name", "mcp")
+            )
+        if name == "ren_handoff_claim":
+            agent = current_agent.get() or {}
+            claimed = controller.memory.claim_handoff(
+                args.get("agent") or agent.get("name", "agent"), args.get("capabilities")
+            )
+            return claimed or {"status": "no_open_handoffs"}
+        if name == "ren_handoff_complete":
+            return controller.memory.complete_handoff(
+                int(args.get("id") or 0), args.get("result", ""), bool(args.get("ok", True))
+            )
+        if name == "ren_handoff_list":
+            return {"handoffs": controller.memory.list_handoffs(args.get("status"))}
+        if name == "ren_speak":
+            text = (args.get("text") or "").strip()
+            if not text:
+                raise MCPError("ren_speak requires text")
+            controller.speak_async(text)
+            return {"status": "speaking", "chars": len(text)}
         raise MCPError(f"Unknown tool {name}")
     except MCPError:
         raise
@@ -244,6 +388,13 @@ def _dispatch_local(controller: Any, name: str, args: dict) -> dict:
 
 
 def dispatch(name: str, args: dict) -> dict:
+    # Per-agent scope gate: tokens resolve to {'name','scopes'} upstream;
+    # 'read'-scoped agents get read-only tools. None (stdio/local) = full.
+    from wren.core.auth import tool_allowed
+
+    agent = current_agent.get()
+    if agent is not None and not tool_allowed(agent, name, args):
+        raise MCPError(f"agent '{agent.get('name')}' scope denied tool {name}")
     # In-process MCP transport: run the tool directly against the live
     # controller. No HTTP call to the REST API, so a proxy (Cloudflare) can
     # never block the tools by banning the self-call.
@@ -295,6 +446,29 @@ def dispatch(name: str, args: dict) -> dict:
         raise MCPError("ren_files op must be list, read, or write")
     if name == "ren_set_mode":
         return _request("POST", "/api/mode", {"mode": args.get("mode", "elevate")})
+    if name == "ren_agent_hello":
+        return _request("POST", "/api/agents/hello", args)
+    if name == "ren_memory_remember":
+        return _request("POST", "/api/memory/remember", args)
+    if name == "ren_memory_recall":
+        return _request(
+            "GET",
+            "/api/memory/recall?query=" + urllib.parse.quote(args.get("query", ""))
+            + f"&limit={int(args.get('limit') or 5)}",
+        )
+    if name == "ren_memory_forget":
+        return _request("POST", "/api/memory/forget", {"key": args.get("key", "")})
+    if name == "ren_handoff_create":
+        return _request("POST", "/api/handoffs", args)
+    if name == "ren_handoff_claim":
+        return _request("POST", "/api/handoffs/claim", args)
+    if name == "ren_handoff_complete":
+        return _request("POST", f"/api/handoffs/{int(args.get('id') or 0)}/complete", args)
+    if name == "ren_handoff_list":
+        qs = f"?status={args['status']}" if args.get("status") else ""
+        return _request("GET", f"/api/handoffs{qs}")
+    if name == "ren_speak":
+        return _request("POST", "/api/speak", {"text": args.get("text", "")})
     raise MCPError(f"Unknown tool {name}")
 
 

@@ -15,8 +15,9 @@ from wren.core.buffer import Draft, DraftBuffer, Receipt
 from wren.core.state import WrenState, WrenStateMachine
 from wren.files.ingest import UnifiedFileIngest
 from wren.llm.elevate import PromptElevator
+from wren.memory.store import MemoryStore
 from wren.screen.inspector import ScreenContext, ScreenInspector
-from wren.stt.correct import apply_corrections
+from wren.stt.correct import apply_corrections, load_corrections
 from wren.stt.engine import BaseSTT, CloudHybridSTT, FasterWhisperSTT, MockSTT
 from wren.targets.factory import get_target_manager
 from wren.targets.x11 import TargetMismatchError, TargetWindow
@@ -59,6 +60,9 @@ class WrenController:
         # surfaces (hotkeys, local REST actions) yield until the lease expires.
         self._remote_session_until: float = 0.0
         self.remote_session_ttl: float = float(os.environ.get("WREN_REMOTE_SESSION_TTL", "180"))
+        # Persistent memory: facts (glossary/contacts/prefs), agent registry,
+        # and the Ren<->agent handoff queue. One SQLite file, no daemon.
+        self.memory = MemoryStore()
 
         if stt_provider == "mock":
             self.stt: BaseSTT = MockSTT()
@@ -167,6 +171,9 @@ class WrenController:
                     if self.phone_screen.get("at") else None,
             },
             "conversation_turns": len(self.conversation),
+            "memory_facts": self.memory.fact_count(),
+            "agents_online": len(self.memory.agents(fresh_s=600)),
+            "handoffs_open": self.memory.open_handoff_count(),
             "remote_session": {
                 "active": self.remote_session_active,
                 "ttl_s": round(max(0.0, self._remote_session_until - time.time()), 1),
@@ -279,7 +286,15 @@ class WrenController:
             self._restore_after_empty_capture()
             return None
 
-        raw_text = apply_corrections((self.stt.transcribe(wav_data) or "").strip())
+        # Memory glossary rides on top of the built-in corrections: a fact the
+        # user stored as a spelling rule ('Dearing is spelled D-E-E-R-I-N-G')
+        # corrects every future transcription deterministically.
+        corr_table = load_corrections()
+        try:
+            corr_table.update(self.memory.glossary())
+        except Exception:
+            pass
+        raw_text = apply_corrections((self.stt.transcribe(wav_data) or "").strip(), corr_table)
         if not raw_text:
             self._restore_after_empty_capture()
             return None
@@ -519,6 +534,46 @@ class WrenController:
         re.I,
     )
 
+    _REMEMBER_RE = re.compile(r"^remember\s+(?:that\s+)?(.+)$", re.I)
+    _SPELLING_RE = re.compile(r"^(\w[\w\-]*)\s+(?:is\s+)?spel(?:l|led|t)\s+(.+)$", re.I)
+    _HANDOFF_RE = re.compile(r"\b(?:ask|tell|have|get)\s+(\w+)\s+to\s+(.+)$", re.I)
+    _HANDOFF_SKIP = {"me", "you", "him", "her", "them", "it", "us", "ren"}
+
+    def remember(self, clause: str) -> str:
+        """Store a durable fact. 'X is spelled Y' also becomes a permanent
+        STT correction so dictation gets the spelling right from now on."""
+        clause = (clause or "").strip()
+        sm = self._SPELLING_RE.match(clause)
+        if sm:
+            misspelling = sm.group(1).lower()
+            correct = re.sub(r"[\s\-_.]+", "", sm.group(2))
+            correct = correct.title() if correct.isupper() else correct
+            self.memory.remember(f"spell:{misspelling}", correct, tags="correction")
+            return f"Got it — {misspelling} is spelled {correct}. I'll get it right from now on."
+        km = re.match(r"^(.{2,60}?)\s+is\s+(.+)$", clause, re.I)
+        if km:
+            key, value = km.group(1).strip().lower(), km.group(2).strip()
+        else:
+            key, value = clause[:60].lower(), clause
+        self.memory.remember(key, value)
+        return f"Remembered: {key} — {value}."
+
+    def delegate(self, agent: str, task: str) -> str:
+        """Queue a task for a remote agent; reports honestly if he's offline."""
+        self.memory.create_handoff(task, created_by="ren")
+        online = {a["name"] for a in self.memory.agents(fresh_s=600)}
+        if agent in online:
+            return f"On it — {agent} picks it up on his next check-in."
+        return f"Queued for {agent} — he's not connected right now, but it'll be waiting."
+
+    def _note_turn(self, user_text: str, reply: str, source: str) -> str:
+        now = time.time()
+        self.conversation.append({"role": "user", "content": user_text, "at": now, "src": source})
+        self.conversation.append({"role": "assistant", "content": reply, "at": time.time()})
+        self.conversation = self.conversation[-20:]
+        self.last_reply = reply
+        return reply
+
     def edit_clipboard(self, instruction: str) -> dict:
         """OpenWhispr-style: transform the user's clipboard in place via LLM."""
         cleaned = (instruction or "").strip()
@@ -571,12 +626,18 @@ class WrenController:
                 )
             except ClipboardError as e:
                 reply = f"I couldn't edit the clipboard: {e}"
-            now = time.time()
-            self.conversation.append({"role": "user", "content": cleaned, "at": now, "src": source})
-            self.conversation.append({"role": "assistant", "content": reply, "at": time.time()})
-            self.conversation = self.conversation[-20:]
-            self.last_reply = reply
-            return reply
+            return self._note_turn(cleaned, reply, source)
+
+        # Memory intent: 'remember that dana's email is ...'
+        m = self._REMEMBER_RE.match(cleaned)
+        if m:
+            return self._note_turn(cleaned, self.remember(m.group(1)), source)
+
+        # Delegation intent: 'ask bart to check the tunnel' — queues a handoff.
+        m = self._HANDOFF_RE.search(cleaned)
+        if m and m.group(1).lower() not in self._HANDOFF_SKIP:
+            return self._note_turn(cleaned, self.delegate(m.group(1).lower(), m.group(2).strip()), source)
+
         now = time.time()
         notes: list[str] = []
         if self.active_target:
@@ -599,6 +660,28 @@ class WrenController:
             sel_text = (sel.stdout or "").strip()[:800] if sel.returncode == 0 else ""
             if sel_text:
                 notes.append(f"Highlighted text on screen:\n{sel_text}")
+        except Exception:
+            pass
+        # Persistent memory (talk path only — brainstorm/elevate deliberately
+        # do not inject, so generation stays unanchored). Top hits for this
+        # utterance + who is connected right now.
+        try:
+            hits = self.memory.recall(cleaned, limit=3)
+            if hits:
+                notes.append(
+                    "MEMORY (facts Ren has stored):\n"
+                    + "\n".join(f"- {h['key']}: {h['value']}" for h in hits)
+                )
+            online = self.memory.agents(fresh_s=600)
+            if online:
+                notes.append(
+                    "Connected agents: "
+                    + ", ".join(
+                        f"{a['name']} ({', '.join(a['capabilities']) or 'general'}, "
+                        f"{int(a['age_s'])}s ago)"
+                        for a in online
+                    )
+                )
         except Exception:
             pass
         screen_note = "\n".join(notes)

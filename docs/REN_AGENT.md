@@ -89,10 +89,14 @@ Tools:
 | `ren_browser` | Owned Chromium. `navigate` and `snapshot` run immediately. `click`, `type`, `move`, and `scroll` require `confirm: true` |
 | `ren_files` | List and read `WREN_WORKSPACE`. Writes require `confirm: true` |
 | `ren_set_mode` | `elevate`, `agent`, or `brainstorm` |
+| `ren_agent_hello` | Announce name + capabilities (call once after initialize) |
+| `ren_memory_remember` / `ren_memory_recall` / `ren_memory_forget` | Durable facts; `tags: correction` feeds the STT glossary |
+| `ren_handoff_create` / `ren_handoff_claim` / `ren_handoff_complete` / `ren_handoff_list` | Task queue between Ren and remote agents |
+| `ren_speak` | Speak through Ren's TTS chain — remote agents borrow his voice |
 
 ### HTTP transport (`/mcp`)
 
-The same nine tools are also served over MCP streamable-HTTP at `http://<host>:8765/mcp` on the running Ren server — this is the transport a remote agent (for example a cloud agent behind a tunnel) uses. Point an MCP client at the URL and pass the pairing token as a bearer credential:
+The same tools are also served over MCP streamable-HTTP at `http://<host>:8765/mcp` on the running Ren server — this is the transport a remote agent (for example a cloud agent behind a tunnel) uses. Point an MCP client at the URL and pass the pairing token as a bearer credential:
 
 ```json
 {
@@ -130,3 +134,18 @@ The Gradle wrapper is included. The first build downloads Gradle 8.9 and the And
 Microphone audio is recognized on the phone (Android speech recognizer) and the finished sentence is sent as text. The workstation can still use its own microphone from the desktop orb. Faster-Whisper is optional there and is not downloaded by the phone.
 
 Ren will not drive arbitrary apps with gestures. Screen reading and paste use the accessibility service you turn on, and paste only hits the focused field after the card confirmation.
+
+## Voice memory & delegation
+
+- *"Remember that Dana's email is dana@dgfcorp.com"* → stored durably (SQLite
+  FTS5 at `~/.config/wren/memory.db`), recalled automatically into talk-mode
+  answers. Spelling rules — *"remember Deering is spelled D-E-E-R-I-N-G"* —
+  also become permanent STT corrections.
+- *"Ask Bart to check the tunnel"* → queues a handoff the agent claims over
+  MCP. Ren says honestly when the agent isn't connected.
+- Remote agents announce themselves with `ren_agent_hello`; their
+  capabilities and last-seen time ride into conversation context so Ren knows
+  who can take what. `ren_speak` lets them answer in Ren's own voice.
+- Per-agent scoped tokens: `~/.config/wren/agent-tokens.json`
+  (`WREN_AGENT_TOKENS`). A `"read"`-scoped token gets read-only tools —
+  mutating tools and non-GET REST are denied.
