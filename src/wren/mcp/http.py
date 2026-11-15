@@ -93,6 +93,13 @@ class McpHttpTransport:
         # instead of HTTP-calling the REST API. Reset after the request so
         # the stdio bridge (same module, separate process) is unaffected.
         local_token = bridge.local_controller.set(self.controller)
+        # Each MCP request extends the remote-agent lease: while an agent is
+        # connected, local mutating surfaces (hotkeys, local REST actions)
+        # yield so the agent runs uncontested. Lease expires on its own when
+        # the agent goes quiet — no disconnect handshake required.
+        touch = getattr(self.controller, "touch_remote_session", None)
+        if touch is not None:
+            touch()
         try:
             await self.manager.handle_request(scope, receive, send)
         finally:

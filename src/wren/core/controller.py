@@ -16,6 +16,7 @@ from wren.core.state import WrenState, WrenStateMachine
 from wren.files.ingest import UnifiedFileIngest
 from wren.llm.elevate import PromptElevator
 from wren.screen.inspector import ScreenContext, ScreenInspector
+from wren.stt.correct import apply_corrections
 from wren.stt.engine import BaseSTT, CloudHybridSTT, FasterWhisperSTT, MockSTT
 from wren.targets.factory import get_target_manager
 from wren.targets.x11 import TargetMismatchError, TargetWindow
@@ -54,6 +55,10 @@ class WrenController:
         self.speaking_level: float = 0.0
         self.browser = BrowserController()
         self.workspace = WorkspaceWriter()
+        # Remote-agent session: while an MCP client is driving, local mutating
+        # surfaces (hotkeys, local REST actions) yield until the lease expires.
+        self._remote_session_until: float = 0.0
+        self.remote_session_ttl: float = float(os.environ.get("WREN_REMOTE_SESSION_TTL", "180"))
 
         if stt_provider == "mock":
             self.stt: BaseSTT = MockSTT()
@@ -107,6 +112,20 @@ class WrenController:
         """Unified 0.0..1.0 energy level driving the orb's radial glow equalizer."""
         return max(self.audio.level, self.speaking_level)
 
+    @property
+    def remote_session_active(self) -> bool:
+        """Whether a remote MCP agent currently holds the yield lease."""
+        return time.time() < self._remote_session_until
+
+    def touch_remote_session(self) -> None:
+        """Extend the remote-agent lease; called per MCP request so a quiet
+        agent releases local control automatically."""
+        self._remote_session_until = time.time() + self.remote_session_ttl
+
+    def release_remote_session(self) -> None:
+        """User kill-switch: end the remote-agent lease immediately."""
+        self._remote_session_until = 0.0
+
     def status_dict(self, mcp_http_mounted: bool) -> dict:
         """The /api/status payload, shared by the REST route and the in-process
         MCP dispatch so both report exactly the same shape."""
@@ -148,6 +167,10 @@ class WrenController:
                     if self.phone_screen.get("at") else None,
             },
             "conversation_turns": len(self.conversation),
+            "remote_session": {
+                "active": self.remote_session_active,
+                "ttl_s": round(max(0.0, self._remote_session_until - time.time()), 1),
+            },
             "mcp_http_mounted": mcp_http_mounted,
         }
 
@@ -185,6 +208,10 @@ class WrenController:
         Record the currently focused target window BEFORE recording,
         halt any active TTS playback (barge-in), then begin microphone capture.
         """
+        if self.remote_session_active:
+            # A remote MCP agent is driving — local mic/hotkey input yields
+            # until its lease expires (or the user hits /api/session/release).
+            return
         self.tts.stop()
         self.is_speaking = False
         self.speaking_level = 0.0
@@ -252,7 +279,7 @@ class WrenController:
             self._restore_after_empty_capture()
             return None
 
-        raw_text = (self.stt.transcribe(wav_data) or "").strip()
+        raw_text = apply_corrections((self.stt.transcribe(wav_data) or "").strip())
         if not raw_text:
             self._restore_after_empty_capture()
             return None

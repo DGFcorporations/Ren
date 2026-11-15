@@ -64,6 +64,9 @@ class FasterWhisperSTT(BaseSTT):
             beam_size=5,
             language="en",
             vad_filter=True,
+            # Biases name spellings at decode time — without it Whisper
+            # prefers the dictionary word and emits "Rin"/"Wren" for "Ren".
+            initial_prompt="Ren, the DGF voice assistant. Chandler. Devin. Brock.",
         )
         texts = [segment.text.strip() for segment in segments]
         return " ".join(texts).strip()
@@ -128,7 +131,7 @@ class CloudHybridSTT(BaseSTT):
             try:
                 with httpx.Client(timeout=self.timeout) as client:
                     res = client.post(
-                        "https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true",
+                        "https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&keywords=Ren",
                         content=raw_bytes,
                         headers={
                             "Authorization": f"Token {dg_key}",

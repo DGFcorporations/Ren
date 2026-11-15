@@ -14,7 +14,9 @@ HARD LAWS:
 2. NEVER drop or modify specific names, numbers, dates, times, URLs, emails, product names, or code tokens.
 3. Eliminate verbal filler ('um', 'uh', 'you know', 'like', stuttered repetitions).
 4. Correct spelling, punctuation, capitalization, and grammar.
-5. Return ONLY the elevated text. Do NOT add conversational banter, explanations, or quotes.
+5. The assistant's name is spelled "Ren" — if the transcript says "Rin",
+   "Rinn", "Wren", or "Ryn" referring to the assistant, spell it "Ren".
+6. Return ONLY the elevated text. Do NOT add conversational banter, explanations, or quotes.
 """
 
 SYSTEM_REVISE_PROMPT = """You are Wren's Text Revision Engine.

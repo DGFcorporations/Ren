@@ -1236,6 +1236,22 @@ def create_app(
 
     app = FastAPI(title="Wren Assistant", lifespan=lifespan)
 
+    # While a remote MCP agent holds the session lease, these local action
+    # endpoints yield (409) so the agent runs uncontested. Deliberately NOT
+    # blocked: GETs (monitoring), /api/ui/* (orb geometry must stay live),
+    # /api/screen/phone (pushes context the agent reads), /api/shutdown and
+    # /api/conversation/clear and /api/session/release (user escape hatches).
+    REMOTE_YIELD_PATHS = {
+        "/api/listen/start", "/api/listen/stop",
+        "/api/dictate", "/api/converse",
+        "/api/revise", "/api/revert", "/api/copy", "/api/paste",
+        "/api/dismiss", "/api/cancel", "/api/speak",
+        "/api/mode", "/api/voice/config",
+        "/api/files/read", "/api/files/attach",
+        "/api/clipboard/edit", "/api/browser/act",
+        "/api/workspace/read", "/api/workspace/write",
+    }
+
     @app.middleware("http")
     async def enforce_nonloopback_auth(request: Request, call_next):
         client_host = request.client.host if request.client else None
@@ -1249,6 +1265,22 @@ def create_app(
                     content={"detail": "Unauthorized: valid bearer token required for non-loopback access"},
                     headers={"WWW-Authenticate": "Bearer"},
                 )
+
+        if (
+            controller.remote_session_active
+            and request.method != "GET"
+            and request.url.path in REMOTE_YIELD_PATHS
+        ):
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": "remote_agent_session",
+                    "detail": "A remote MCP agent is driving Ren; local actions yield until it disconnects.",
+                    "retry_after_s": round(
+                        max(0.0, controller._remote_session_until - time.time()), 1
+                    ),
+                },
+            )
 
         return await call_next(request)
 
@@ -1552,6 +1584,12 @@ def create_app(
         controller.conversation.clear()
         controller.last_reply = ""
         return {"type": "conversation_cleared"}
+
+    @app.post("/api/session/release")
+    def release_session():
+        """User kill-switch: end a remote-agent yield lease immediately."""
+        controller.release_remote_session()
+        return {"status": "released", "remote_session": {"active": False, "ttl_s": 0.0}}
 
     @app.get("/api/paste/preview")
     def paste_preview():
