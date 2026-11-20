@@ -223,6 +223,13 @@ class DraftBuffer:
         self.receipts.append(r)
         return r
 
+    def clear(self):
+        """Reset all draft, utterance, approval, and receipt state."""
+        self.utterances = {}
+        self.drafts = []
+        self.approvals = {}
+        self.receipts = []
+
     def _invalidate_outstanding_approvals(self, new_revision: int):
         # Outstanding approvals tied to older revisions are rendered obsolete
         for app in self.approvals.values():

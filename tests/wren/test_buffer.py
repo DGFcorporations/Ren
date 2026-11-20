@@ -76,6 +76,23 @@ def test_approval_wrong_target_rejected():
         buffer.consume_approval(approval.id, current_target_hash="window-browser-hijack")
 
 
+def test_buffer_clear_resets_all_state():
+    buffer = DraftBuffer()
+    u1 = buffer.record_utterance("Hello")
+    buffer.create_draft_from_utterance(u1.id, "Hello there")
+    buffer.create_approval("paste", target_hash="window-abc", ttl_seconds=60)
+    buffer.record_receipt("action-1", "done", "evidence")
+
+    buffer.clear()
+
+    assert buffer.drafts == []
+    assert buffer.utterances == {}
+    assert buffer.approvals == {}
+    assert buffer.receipts == []
+    assert buffer.current_draft is None
+    assert buffer.current_revision == 0
+
+
 def test_state_machine_valid_and_invalid_transitions():
     sm = WrenStateMachine()
     assert sm.state == WrenState.IDLE

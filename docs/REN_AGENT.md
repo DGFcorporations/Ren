@@ -4,7 +4,7 @@ Ren is the same assistant as the Wren service in this repo. The phone is a compa
 
 ## Workstation
 
-Requirements: Python 3.12, a desktop session if you want the visible browser.
+Requirements: Python 3.12, a desktop session if you want the visible browser. The native floating orb also needs the system GTK3/WebKit2 bindings (`python3-gi`, `python3-gi-cairo`, `gir1.2-webkit2-4.1` on Ubuntu/Mint — already present on this workstation). `run_ren.sh` links those system bindings into `.venv` automatically after a fresh `python3.12 -m venv .venv`; without them the orb falls back to pywebview and exits.
 
 ```bash
 ./run_ren.sh
