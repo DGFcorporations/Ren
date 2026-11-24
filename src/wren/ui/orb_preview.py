@@ -19,6 +19,12 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from wren.core.controller import WrenController
+from wren.core.live_context import (
+    LiveContextError,
+    LiveContextSnapshotter,
+    LiveConversationEngine,
+    LiveConverseRequest,
+)
 from wren.files.ingest import FileIngestError
 
 # SHA-256 of the old built-in token. The token itself is not stored here.
@@ -83,6 +89,18 @@ class AttachFileRequest(BaseModel):
 
 class ModeRequest(BaseModel):
     mode: str
+
+
+class LiveContextRequest(BaseModel):
+    include_screenshot: bool = False
+    include_files: bool = True
+    include_windows: bool = True
+    files: str = ""
+
+
+class LiveHistoryRequest(BaseModel):
+    op: str = "get"
+    limit: int = 30
 
 
 class ListenStartRequest(BaseModel):
@@ -1215,6 +1233,10 @@ def create_app(
 ) -> FastAPI:
     if controller is None:
         controller = WrenController()
+    controller.live_snapshotter = LiveContextSnapshotter()
+    controller.live_engine = LiveConversationEngine(
+        controller=controller, snapshotter=controller.live_snapshotter
+    )
 
     active_auth_token, _replaced = resolve_auth_token(auth_token, persist=False)
 
@@ -1703,6 +1725,46 @@ def create_app(
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
+    @app.get("/api/live/context")
+    def get_live_context(
+        include_screenshot: bool = False,
+        include_files: bool = True,
+        include_windows: bool = True,
+        files: str = "",
+    ):
+        file_list = [f.strip() for f in files.split(",") if f.strip()] if files else None
+        try:
+            return controller.live_snapshotter.capture(
+                include_files=include_files,
+                include_windows=include_windows,
+                include_screenshot=include_screenshot,
+                file_paths=file_list,
+            )
+        except LiveContextError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/live/converse")
+    def post_live_converse(req: LiveConverseRequest):
+        try:
+            return controller.live_engine.converse(
+                req.text,
+                role=req.role,
+                include_screenshot=req.include_screenshot,
+                include_files=req.include_files,
+                include_windows=req.include_windows,
+                file_paths=req.file_paths or None,
+            )
+        except LiveContextError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/live/history")
+    def get_live_history(limit: int = 30):
+        return {"turns": controller.live_engine.get_history(limit=max(1, min(limit, 80)))}
+
+    @app.delete("/api/live/history")
+    def clear_live_history():
+        return controller.live_engine.clear_history()
+
     @app.get("/api/workspace/list")
     def workspace_list(path: str = "."):
         try:
@@ -1850,6 +1912,26 @@ def create_app(
                         "text": reply,
                         "requires_confirm": True,
                     })
+
+                elif action == "live_converse":
+                    result = controller.live_engine.converse(
+                        msg.get("text", ""),
+                        role=msg.get("role", "user"),
+                        include_screenshot=bool(msg.get("include_screenshot", False)),
+                        include_files=bool(msg.get("include_files", True)),
+                        include_windows=bool(msg.get("include_windows", True)),
+                        file_paths=msg.get("file_paths"),
+                    )
+                    await websocket.send_json(result)
+
+                elif action == "live_snapshot":
+                    snap = controller.live_snapshotter.capture(
+                        include_files=bool(msg.get("include_files", True)),
+                        include_windows=bool(msg.get("include_windows", True)),
+                        include_screenshot=bool(msg.get("include_screenshot", False)),
+                        file_paths=msg.get("file_paths"),
+                    )
+                    await websocket.send_json(snap)
 
                 elif action == "request_screen":
                     await websocket.send_json({"type": "screen_request"})

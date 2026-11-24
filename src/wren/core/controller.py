@@ -48,6 +48,9 @@ class WrenController:
         self.attached_files: list[dict] = []
         self.mode: str = "elevate"
         self.phone_screen: dict = {"package": "", "text": "", "at": 0.0}
+        self.live_snapshotter = None
+        self.live_engine = None
+        self._agentwork = None
         self.conversation: list[dict] = []
         self.conversation_ttl: float = 900.0  # turns older than 15 min are excluded from prompts
         self.last_reply: str = ""
@@ -98,6 +101,15 @@ class WrenController:
                         self.active_target = target
             except Exception:
                 pass
+
+    @property
+    def agentwork(self):
+        """Lazy AgentWorkspace coordinator (agent work-through layer)."""
+        if self._agentwork is None:
+            from wren.agentwork import AgentWorkspace
+
+            self._agentwork = AgentWorkspace(self)
+        return self._agentwork
 
     @property
     def state(self) -> WrenState:

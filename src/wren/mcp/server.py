@@ -16,6 +16,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from typing import Any
 
 PROTOCOL = "2024-11-05"
@@ -83,7 +84,9 @@ TOOLS = [
     },
     {
         "name": "ren_paste_commit",
-        "description": "Paste the current preview into the focused workstation window. Requires confirm true.",
+        "description": (
+            "Paste the current preview into the focused workstation window. Requires confirm true."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {"confirm": {"type": "boolean"}},
@@ -92,7 +95,10 @@ TOOLS = [
     },
     {
         "name": "ren_browser",
-        "description": "Control Ren's owned Chromium. snapshot and navigate run immediately. click, type, move, and scroll require confirm true.",
+        "description": (
+            "Control Ren's owned Chromium. snapshot and navigate run immediately. "
+            "click, type, move, and scroll require confirm true."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -233,11 +239,204 @@ TOOLS = [
             "required": ["text"],
         },
     },
+    {
+        "name": "ren_live_context",
+        "description": (
+            "Capture a live snapshot of current workspace files, open desktop app interfaces, "
+            "the active window, and an optional PNG screenshot (returned as an MCP image block)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "include_screenshot": {
+                    "type": "boolean",
+                    "description": "If true, capture and attach a PNG screenshot of the desktop.",
+                },
+                "include_files": {"type": "boolean"},
+                "include_windows": {"type": "boolean"},
+                "file_paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional specific workspace file paths to inspect.",
+                },
+            },
+        },
+    },
+    {
+        "name": "ren_live_converse",
+        "description": (
+            "Run a live conversation turn with Ren grounded in current workspace files, "
+            "desktop app interfaces, and optional screen capture; shares history with the user."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Message or question for Ren."},
+                "role": {"type": "string", "enum": ["user", "agent"]},
+                "include_screenshot": {"type": "boolean"},
+                "include_files": {"type": "boolean"},
+                "include_windows": {"type": "boolean"},
+                "file_paths": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["text"],
+        },
+    },
+    {
+        "name": "ren_live_history",
+        "description": "Read or clear the shared live conversation history between user, Ren, and MCP.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "op": {"type": "string", "enum": ["get", "clear"]},
+                "limit": {"type": "integer"},
+            },
+        },
+    },
+    {
+        "name": "ren_work_begin",
+        "description": (
+            "Open (or resume) a durable agent work session. Returns a session_id "
+            "you carry on later tool calls for continuity and ledger receipts."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string"},
+                "context": {"type": "object"},
+            },
+        },
+    },
+    {
+        "name": "ren_work_actions",
+        "description": "List durable actions for a session, optionally filtered by status.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string"},
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "queued", "running", "awaiting_approval", "approved", "executing",
+                        "completed", "cancelled", "failed", "denied", "expired",
+                    ],
+                },
+                "limit": {"type": "integer"},
+            },
+        },
+    },
+    {
+        "name": "ren_work_status",
+        "description": "Inspect one action: status, progress, receipt, and verified outcome.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"action_id": {"type": "string"}},
+            "required": ["action_id"],
+        },
+    },
+    {
+        "name": "ren_work_cancel",
+        "description": "Request cancellation of a running action.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"action_id": {"type": "string"}},
+            "required": ["action_id"],
+        },
+    },
+    {
+        "name": "ren_work_poll",
+        "description": "Pull events (progress, actions, approvals) since an event id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string"},
+                "after_id": {"type": "integer"},
+                "topics": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+    },
+    {
+        "name": "ren_work_approvals",
+        "description": "List pending async approvals awaiting resolve (user or agent).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "ren_work_resolve",
+        "description": "Approve or deny a pending action approval.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action_id": {"type": "string"},
+                "approved": {"type": "boolean"},
+            },
+            "required": ["action_id", "approved"],
+        },
+    },
+    {
+        "name": "ren_work_policy",
+        "description": "Get or set per-agent policy (rate quotas, write allow).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent": {"type": "string"},
+                "get": {"type": "boolean"},
+                "quota_per_min": {"type": "number"},
+                "quota_per_day": {"type": "number"},
+                "write_allowed": {"type": "boolean"},
+            },
+        },
+    },
+    {
+        "name": "ren_work_route",
+        "description": "Route a task to the best online agent by required capabilities.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task": {"type": "string"},
+                "requires": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["task"],
+        },
+    },
+    {
+        "name": "ren_visual_query",
+        "description": "Semantic grounding: map a text query to on-screen/browser elements by label.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+    },
 ]
 
 
 class MCPError(RuntimeError):
     pass
+
+
+_LOCAL_CHAT_CONTROLLER = None
+_LOCAL_LIVE_ENGINE = None
+
+
+def _get_local_chat_controller():
+    global _LOCAL_CHAT_CONTROLLER
+    if _LOCAL_CHAT_CONTROLLER is None:
+        try:
+            from wren.targets.chat_windows import DesktopChatController
+        except ImportError:
+            from chat_windows import DesktopChatController  # type: ignore[no-redef]
+        _LOCAL_CHAT_CONTROLLER = DesktopChatController()
+    return _LOCAL_CHAT_CONTROLLER
+
+
+def _get_local_live_engine():
+    global _LOCAL_LIVE_ENGINE
+    if _LOCAL_LIVE_ENGINE is None:
+        try:
+            from wren.core.live_context import LiveConversationEngine
+        except ImportError:
+            from live_context import LiveConversationEngine  # type: ignore[no-redef]
+        _LOCAL_LIVE_ENGINE = LiveConversationEngine()
+    return _LOCAL_LIVE_ENGINE
 
 
 def _request(method: str, path: str, payload: dict | None = None, timeout: float = 30) -> dict:
@@ -257,7 +456,188 @@ def _request(method: str, path: str, payload: dict | None = None, timeout: float
         detail = exc.read().decode("utf-8", errors="replace")
         raise MCPError(f"{method} {path} failed ({exc.code}): {detail[:400]}") from exc
     except urllib.error.URLError as exc:
-        raise MCPError(f"Ren is not reachable at {REN_URL}. Start it with ./run_ren.sh. {exc.reason}") from exc
+        raise MCPError(
+            f"Ren is not reachable at {REN_URL}. Start it with ./run_ren.sh. {exc.reason}"
+        ) from exc
+
+
+def _handle_live_context_local(controller: Any, args: dict) -> dict:
+    """Handle ren_live_context against the live controller."""
+    try:
+        from wren.core.live_context import LiveContextSnapshotter
+    except ImportError:
+        from live_context import LiveContextSnapshotter  # type: ignore[no-redef]
+
+    snapshotter = getattr(controller, "_live_snapshotter", None)
+    if snapshotter is None:
+        snapshotter = LiveContextSnapshotter()
+        controller._live_snapshotter = snapshotter
+
+    include_screenshot = bool(args.get("include_screenshot", False))
+    include_files = bool(args.get("include_files", True))
+    include_windows = bool(args.get("include_windows", True))
+    file_paths = args.get("file_paths") or []
+
+    return snapshotter.capture(
+        include_files=include_files,
+        include_windows=include_windows,
+        include_screenshot=include_screenshot,
+        file_paths=file_paths or None,
+    )
+
+
+def _handle_live_converse_local(controller: Any, args: dict) -> dict:
+    """Handle ren_live_converse against the live controller."""
+    try:
+        from wren.core.live_context import LiveConversationEngine
+    except ImportError:
+        from live_context import LiveConversationEngine  # type: ignore[no-redef]
+
+    engine = getattr(controller, "_live_conversation_engine", None)
+    if engine is None:
+        snapshotter = getattr(controller, "_live_snapshotter", None)
+        if snapshotter is None:
+            from wren.core.live_context import LiveContextSnapshotter
+            snapshotter = LiveContextSnapshotter()
+            controller._live_snapshotter = snapshotter
+        engine = LiveConversationEngine(controller=controller, snapshotter=snapshotter)
+        controller._live_conversation_engine = engine
+
+    return engine.converse(
+        args.get("text", ""),
+        role=args.get("role", "user"),
+        include_screenshot=bool(args.get("include_screenshot", False)),
+        include_files=bool(args.get("include_files", True)),
+        include_windows=bool(args.get("include_windows", True)),
+        file_paths=args.get("file_paths") or None,
+    )
+
+
+def _handle_live_history_local(controller: Any, args: dict) -> dict:
+    """Handle ren_live_history against the live controller."""
+    try:
+        from wren.core.live_context import LiveConversationEngine
+    except ImportError:
+        from live_context import LiveConversationEngine  # type: ignore[no-redef]
+
+    engine = getattr(controller, "_live_conversation_engine", None)
+    if engine is None:
+        snapshotter = getattr(controller, "_live_snapshotter", None)
+        if snapshotter is None:
+            from wren.core.live_context import LiveContextSnapshotter
+            snapshotter = LiveContextSnapshotter()
+            controller._live_snapshotter = snapshotter
+        engine = LiveConversationEngine(controller=controller, snapshotter=snapshotter)
+        controller._live_conversation_engine = engine
+
+    op = args.get("op", "get")
+    limit = int(args.get("limit", 30))
+    if op == "clear":
+        return engine.clear_history()
+    return {"turns": engine.get_history(limit=limit)}
+
+
+def _run_execute(
+    controller: Any,
+    name: str,
+    args: dict,
+    fn,
+    *,
+    require_approval: bool = False,
+    verify_fn=None,
+    write: bool = False,
+) -> dict:
+    """Route a mutating tool through the AgentWorkspace ledger + approval bridge."""
+    ws, session_id, agent = _agentwork_session(controller, args)
+    return ws.execute(
+        session_id,
+        agent,
+        name,
+        args,
+        fn,
+        require_approval=require_approval,
+        approval_summary={"tool": name, "args": {k: v for k, v in args.items() if k != "work"}},
+        verify_fn=verify_fn,
+        write=write,
+    )
+
+
+def _agentwork_session(controller: Any, args: dict, agent: str | None = None) -> tuple:
+    """Resolve session_id + agent for work tiles."""
+    agent = agent or (current_agent.get() or {}).get("name") or "agent"
+    session_id = (args.get("session_id") or "").strip() or None
+    ws = controller.agentwork
+    sess = ws.begin(session_id or uuid.uuid4().hex, agent)
+    return ws, sess["session_id"], agent
+
+
+def _handle_work_begin(controller: Any, args: dict) -> dict:
+    _, session_id, agent = _agentwork_session(controller, args)
+    sess = controller.agentwork.ledger.get_session(session_id)
+    return {"type": "session_ready", "session_id": session_id, "agent": agent, "created": sess["created"]}
+
+
+def _handle_work_actions(controller: Any, args: dict) -> dict:
+    ws, session_id, _ = _agentwork_session(controller, args)
+    actions = ws.ledger.list_actions(
+        session_id=session_id, status=args.get("status"), limit=args.get("limit", 50)
+    )
+    return {"type": "agentwork_actions", "session_id": session_id, "count": len(actions), "actions": actions}
+
+
+def _handle_work_status(controller: Any, args: dict) -> dict:
+    return controller.agentwork.ledger.get_action(args["action_id"])
+
+
+def _handle_work_cancel(controller: Any, args: dict) -> dict:
+    return controller.agentwork.ledger.request_cancel(args["action_id"])
+
+
+def _handle_work_poll(controller: Any, args: dict) -> dict:
+    ws, session_id, _ = _agentwork_session(controller, args)
+    events = ws.ledger.poll_events(
+        session_id=session_id, after_id=args.get("after_id", 0), topics=args.get("topics")
+    )
+    return {"type": "agentwork_events", "session_id": session_id, "events": events}
+
+
+def _handle_work_approvals(controller: Any, args: dict) -> dict:
+    pending = controller.agentwork.bridge.list_pending()
+    return {"type": "pending_approvals", "count": len(pending), "approvals": pending}
+
+
+def _handle_work_resolve(controller: Any, args: dict) -> dict:
+    return controller.agentwork.bridge.resolve(args["action_id"], bool(args["approved"]))
+
+
+def _handle_work_policy(controller: Any, args: dict) -> dict:
+    agent = args.get("agent") or (current_agent.get() or {}).get("name") or "agent"
+    if args.get("get"):
+        return controller.agentwork.ledger.get_policy(agent)
+    return controller.agentwork.ledger.set_policy(
+        agent,
+        quota_per_min=args.get("quota_per_min"),
+        quota_per_day=args.get("quota_per_day"),
+        write_allowed=args.get("write_allowed"),
+    )
+
+
+def _handle_work_route(controller: Any, args: dict) -> dict:
+    candidates = controller.agentwork.router.route(args.get("task", ""), args.get("requires"))
+    return {"type": "route_result", "task": args.get("task"), "candidates": candidates}
+
+
+def _handle_visual_query(controller: Any, args: dict) -> dict:
+    snap = getattr(controller, "live_snapshotter", None)
+    live_text = ""
+    if snap is not None:
+        try:
+            cap = snap.capture(include_files=True, include_windows=True, include_screenshot=False)
+            live_text = "\n".join(f.get("content", "") for f in cap.get("files", [])[:4])
+        except Exception:
+            live_text = ""
+    hits = controller.agentwork.grounding.visual_query(args.get("query", ""), live_text)
+    return {"type": "visual_query_result", "query": args.get("query"), "hits": hits}
 
 
 def _dispatch_local(controller: Any, name: str, args: dict) -> dict:
@@ -309,11 +689,53 @@ def _dispatch_local(controller: Any, name: str, args: dict) -> dict:
         if name == "ren_paste_preview":
             return controller.paste_preview()
         if name == "ren_paste_commit":
+            if args.get("work"):
+                def _paste():
+                    receipt = controller.paste_current_draft()
+                    return {"status": "pasted", "outcome": receipt.outcome, "evidence": receipt.evidence}
+
+                def verify():
+                    return controller.agentwork.verify.paste_receipt()
+
+                if args.get("action_id"):
+                    return controller.agentwork.execute_after_approval(args["action_id"], _paste, verify)
+                if args.get("confirm") is not True:
+                    return _run_execute(
+                        controller, name, args, _paste,
+                        require_approval=True, verify_fn=verify, write=True,
+                    )
+                return _run_execute(controller, name, args, _paste, verify_fn=verify, write=True)
             if args.get("confirm") is not True:
                 raise MCPError("ren_paste_commit requires confirm true after the clipboard preview")
             receipt = controller.paste_current_draft()
             return {"status": "pasted", "outcome": receipt.outcome, "evidence": receipt.evidence}
         if name == "ren_browser":
+            if args.get("work"):
+                def _browser():
+                    return controller.browser.act(
+                        args.get("op"),
+                        confirm=True,
+                        url=args.get("url"),
+                        selector=args.get("selector"),
+                        text=args.get("text"),
+                        x=args.get("x"),
+                        y=args.get("y"),
+                        delta_y=args.get("delta_y"),
+                    )
+
+                def verify():
+                    return controller.agentwork.verify.browser_state()
+
+                op = args.get("op")
+                mutating = op in {"click", "type", "move", "scroll"}
+                if args.get("action_id"):
+                    return controller.agentwork.execute_after_approval(args["action_id"], _browser, verify)
+                if mutating and args.get("confirm") is not True:
+                    return _run_execute(
+                        controller, name, args, _browser,
+                        require_approval=True, verify_fn=verify, write=True,
+                    )
+                return _run_execute(controller, name, args, _browser, verify_fn=verify, write=mutating)
             return controller.browser.act(
                 args.get("op"),
                 confirm=bool(args.get("confirm")),
@@ -332,6 +754,27 @@ def _dispatch_local(controller: Any, name: str, args: dict) -> dict:
             if op == "read":
                 return controller.workspace.read(args.get("path", ""))
             if op == "write":
+                if args.get("work"):
+                    def _write():
+                        if args.get("approval_id"):
+                            return controller.workspace.commit_write(args.get("approval_id"))
+                        return controller.workspace.write(
+                            args.get("path", ""), args.get("content", ""), confirm=True
+                        )
+
+                    def verify():
+                        return controller.agentwork.verify.file_written(
+                            args.get("path", ""), args.get("content")
+                        )
+
+                    if args.get("action_id"):
+                        return controller.agentwork.execute_after_approval(args["action_id"], _write, verify)
+                    if args.get("confirm") is not True and not args.get("approval_id"):
+                        return _run_execute(
+                            controller, name, args, _write,
+                            require_approval=True, verify_fn=verify, write=True,
+                        )
+                    return _run_execute(controller, name, args, _write, verify_fn=verify, write=True)
                 if args.get("approval_id"):
                     return controller.workspace.commit_write(args.get("approval_id"))
                 return controller.workspace.write(
@@ -380,11 +823,105 @@ def _dispatch_local(controller: Any, name: str, args: dict) -> dict:
                 raise MCPError("ren_speak requires text")
             controller.speak_async(text)
             return {"status": "speaking", "chars": len(text)}
+        if name == "ren_live_context":
+            return _handle_live_context_local(controller, args)
+        if name == "ren_live_converse":
+            return _handle_live_converse_local(controller, args)
+        if name == "ren_live_history":
+            return _handle_live_history_local(controller, args)
+        if name == "ren_work_begin":
+            return _handle_work_begin(controller, args)
+        if name == "ren_work_actions":
+            return _handle_work_actions(controller, args)
+        if name == "ren_work_status":
+            return _handle_work_status(controller, args)
+        if name == "ren_work_cancel":
+            return _handle_work_cancel(controller, args)
+        if name == "ren_work_poll":
+            return _handle_work_poll(controller, args)
+        if name == "ren_work_approvals":
+            return _handle_work_approvals(controller, args)
+        if name == "ren_work_resolve":
+            return _handle_work_resolve(controller, args)
+        if name == "ren_work_policy":
+            return _handle_work_policy(controller, args)
+        if name == "ren_work_route":
+            return _handle_work_route(controller, args)
+        if name == "ren_visual_query":
+            return _handle_visual_query(controller, args)
         raise MCPError(f"Unknown tool {name}")
     except MCPError:
         raise
     except Exception as exc:
         raise MCPError(str(exc)) from exc
+
+
+def _handle_live_context_http(args: dict) -> dict:
+    include_screenshot = bool(args.get("include_screenshot", False))
+    include_files = bool(args.get("include_files", True))
+    include_windows = bool(args.get("include_windows", True))
+    file_paths = args.get("file_paths") or []
+    params = urllib.parse.urlencode(
+        {
+            "include_screenshot": str(include_screenshot).lower(),
+            "include_files": str(include_files).lower(),
+            "include_windows": str(include_windows).lower(),
+            "files": ",".join(file_paths),
+        }
+    )
+    try:
+        return _request("GET", f"/api/live/context?{params}")
+    except MCPError:
+        from wren.core.live_context import LiveContextSnapshotter
+
+        return LiveContextSnapshotter().capture(
+            include_files=include_files,
+            include_windows=include_windows,
+            include_screenshot=include_screenshot,
+            file_paths=file_paths or None,
+        )
+
+
+def _handle_live_converse_http(args: dict) -> dict:
+    payload = {
+        "text": args.get("text", ""),
+        "role": args.get("role", "user"),
+        "include_screenshot": bool(args.get("include_screenshot", False)),
+        "include_files": bool(args.get("include_files", True)),
+        "include_windows": bool(args.get("include_windows", True)),
+        "file_paths": args.get("file_paths") or [],
+    }
+    try:
+        return _request("POST", "/api/live/converse", payload)
+    except MCPError:
+        from wren.core.live_context import LiveConversationEngine
+
+        return LiveConversationEngine().converse(
+            payload["text"],
+            role=payload["role"],
+            include_screenshot=payload["include_screenshot"],
+            include_files=payload["include_files"],
+            include_windows=payload["include_windows"],
+            file_paths=payload["file_paths"] or None,
+        )
+
+
+def _handle_live_history_http(args: dict) -> dict:
+    op = args.get("op", "get")
+    limit = int(args.get("limit", 30))
+    if op == "clear":
+        try:
+            return _request("DELETE", "/api/live/history")
+        except MCPError:
+            from wren.core.live_context import LiveConversationEngine
+
+            return LiveConversationEngine().clear_history()
+    try:
+        return _request("GET", f"/api/live/history?limit={limit}")
+    except MCPError:
+        from wren.core.live_context import LiveConversationEngine
+
+        return {"turns": LiveConversationEngine().get_history(limit=limit)}
 
 
 def dispatch(name: str, args: dict) -> dict:
@@ -469,6 +1006,36 @@ def dispatch(name: str, args: dict) -> dict:
         return _request("GET", f"/api/handoffs{qs}")
     if name == "ren_speak":
         return _request("POST", "/api/speak", {"text": args.get("text", "")})
+    if name == "ren_live_context":
+        engine = _get_local_live_engine()
+        return engine.snapshotter.capture(
+            include_files=bool(args.get("include_files", True)),
+            include_windows=bool(args.get("include_windows", True)),
+            include_screenshot=bool(args.get("include_screenshot", False)),
+            file_paths=args.get("file_paths") or None,
+        )
+    if name == "ren_live_converse":
+        engine = _get_local_live_engine()
+        return engine.converse(
+            args.get("text", ""),
+            role=args.get("role", "user"),
+            include_screenshot=bool(args.get("include_screenshot", False)),
+            include_files=bool(args.get("include_files", True)),
+            include_windows=bool(args.get("include_windows", True)),
+            file_paths=args.get("file_paths") or None,
+        )
+    if name == "ren_live_history":
+        engine = _get_local_live_engine()
+        op = args.get("op", "get")
+        limit = int(args.get("limit", 30))
+        if op == "clear":
+            return engine.clear_history()
+        return {"turns": engine.get_history(limit=limit)}
+    if name.startswith("ren_work_") or name == "ren_visual_query":
+        raise MCPError(
+            f"{name} requires the live HTTP MCP transport (in-process controller); "
+            "stdio bridge has no controller to drive the agent-work ledger."
+        )
     raise MCPError(f"Unknown tool {name}")
 
 
@@ -502,12 +1069,24 @@ def handle(message: dict) -> dict | None:
         params = message.get("params") or {}
         try:
             result = dispatch(params.get("name", ""), params.get("arguments") or {})
-            return ok({"content": [{"type": "text", "text": json.dumps(result)}], "isError": False})
+            return ok(
+                {"content": _format_tool_content(result), "isError": False}
+            )
         except MCPError as exc:
             return ok({"content": [{"type": "text", "text": str(exc)}], "isError": True})
     if method is None and msg_id is not None:
         return fail("Missing method")
     return fail(f"Unsupported method {method}")
+
+
+def _format_tool_content(result: dict) -> list[dict]:
+    """Build MCP content blocks, separating any PNG screenshot into a native image block."""
+    payload = dict(result)
+    screenshot_b64 = payload.pop("screenshot_b64", "")
+    blocks: list[dict] = [{"type": "text", "text": json.dumps(payload)}]
+    if screenshot_b64:
+        blocks.append({"type": "image", "data": screenshot_b64, "mimeType": "image/png"})
+    return blocks
 
 
 def main() -> None:

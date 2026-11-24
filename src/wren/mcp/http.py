@@ -81,6 +81,24 @@ class McpHttpTransport:
                     ],
                     isError=True,
                 )
+            # Format result: separate screenshot into image block if present
+            if isinstance(result, dict) and "screenshot_b64" in result:
+                blocks = bridge._format_tool_content(result)
+                from mcp.types import ImageContent
+                content_parts = []
+                for block in blocks:
+                    if block.get("type") == "image":
+                        content_parts.append(
+                            ImageContent(
+                                data=block["data"],
+                                mimeType=block.get("mimeType", "image/png"),
+                            )
+                        )
+                    else:
+                        content_parts.append(
+                            TextContent(type=block["type"], text=block["text"])
+                        )
+                return CallToolResult(content=content_parts, isError=False)
             return CallToolResult(
                 content=[TextContent(type="text", text=json.dumps(result))],
                 isError=False,
